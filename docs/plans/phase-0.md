@@ -1,6 +1,6 @@
 # Phase 0 implementation plan (F-1 through F-7)
 
-**Status:** proposed for review. No application code may be written until this plan and the open questions at the end are approved.
+**Status:** approved and implemented. The final decisions, deviations, verification evidence, and remaining gaps are recorded in `docs/reports/phase-0-completion.md`.
 
 ## 1. Scope and delivery rules
 
@@ -107,32 +107,32 @@ These are conservative exact pins, not version ranges. They must be resolved int
 
 Read-only environment check on 2026-08-05: the workstation currently has Node `24.18.0`, Corepack `0.35.0`, pnpm `9.15.9`, and Docker `29.5.3`. The proposed Node 22/pnpm 10 pins therefore require an explicit toolchain switch; alternatively, the project pins should be revised to the installed Node 24/pnpm 9 combination after compatibility validation. This is an approval decision, not a silent implementation substitution.
 
-| Package | Version | Purpose / justification |
-|---|---:|---|
-| Node.js | 22.18.0 | LTS runtime with stable modern ESM support across the selected stack. |
-| pnpm | 10.15.0 | Workspace package manager pinned through `packageManager` and Corepack. |
-| turbo | 2.5.6 | Small, established task graph/cache for the required monorepo. |
-| typescript | 5.9.2 | Strict compiler baseline; no `any` without the documented exception. |
-| next | 15.4.6 | App Router web shell without adopting an unvalidated major. |
-| react / react-dom | 19.1.1 | Version matched to the selected Next.js line. |
-| hono | 4.9.2 | Lightweight typed HTTP layer required by the architecture. |
-| `@hono/node-server` | 1.19.1 | Explicit Node adapter for the separate API service. |
-| drizzle-orm | 0.44.5 | Typed Postgres schema/query layer and the ORM surface used by the RLS test. |
-| drizzle-kit | 0.31.4 | Forward-only SQL migration generation and validation. |
-| postgres | 3.4.7 | Small Postgres driver supported by Drizzle; transaction-local GUC support. |
-| better-auth | 1.3.7 | Required authentication framework with server-side session verification. |
-| bullmq | 5.58.5 | Required queue/worker library; durability remains in the Postgres outbox. |
-| ioredis | 5.7.0 | BullMQ-compatible Redis client, used only if the Redis question below is approved. |
-| pino | 9.9.0 | Structured JSON logging with a testable redaction boundary. |
-| `@sentry/node` / `@sentry/nextjs` | 9.46.0 | Error capture for the worker/API and web surfaces, disabled when no DSN is present. |
-| zod | 4.1.5 | Runtime validation for environment, sessions, outbox envelopes, and usage events. |
-| uuid | 11.1.0 | Application-generated UUIDv7 without a database extension dependency. |
-| vitest / `@vitest/coverage-v8` | 3.2.4 | Unit/integration test runner and enforceable Money coverage thresholds. |
-| testcontainers | 11.5.1 | Real Postgres integration tests when Docker is available; never SQLite/mocks for RLS. |
-| eslint | 9.34.0 | Flat-config linting and import-boundary enforcement. |
-| typescript-eslint | 8.41.0 | Type-aware lint rules for strict TypeScript. |
-| prettier | 3.6.2 | Deterministic formatting with no runtime effect. |
-| tsx | 4.20.5 | Runs TypeScript migration/worker utilities without a bespoke build runner. |
+| Package                           | Version | Purpose / justification                                                               |
+| --------------------------------- | ------: | ------------------------------------------------------------------------------------- |
+| Node.js                           | 22.18.0 | LTS runtime with stable modern ESM support across the selected stack.                 |
+| pnpm                              | 10.15.0 | Workspace package manager pinned through `packageManager` and Corepack.               |
+| turbo                             |   2.5.6 | Small, established task graph/cache for the required monorepo.                        |
+| typescript                        |   5.9.2 | Strict compiler baseline; no `any` without the documented exception.                  |
+| next                              |  15.4.6 | App Router web shell without adopting an unvalidated major.                           |
+| react / react-dom                 |  19.1.1 | Version matched to the selected Next.js line.                                         |
+| hono                              |   4.9.2 | Lightweight typed HTTP layer required by the architecture.                            |
+| `@hono/node-server`               |  1.19.1 | Explicit Node adapter for the separate API service.                                   |
+| drizzle-orm                       |  0.44.5 | Typed Postgres schema/query layer and the ORM surface used by the RLS test.           |
+| drizzle-kit                       |  0.31.4 | Forward-only SQL migration generation and validation.                                 |
+| postgres                          |   3.4.7 | Small Postgres driver supported by Drizzle; transaction-local GUC support.            |
+| better-auth                       |   1.3.7 | Required authentication framework with server-side session verification.              |
+| bullmq                            |  5.58.5 | Required queue/worker library; durability remains in the Postgres outbox.             |
+| ioredis                           |   5.7.0 | BullMQ-compatible Redis client, used only if the Redis question below is approved.    |
+| pino                              |   9.9.0 | Structured JSON logging with a testable redaction boundary.                           |
+| `@sentry/node` / `@sentry/nextjs` |  9.46.0 | Error capture for the worker/API and web surfaces, disabled when no DSN is present.   |
+| zod                               |   4.1.5 | Runtime validation for environment, sessions, outbox envelopes, and usage events.     |
+| uuid                              |  11.1.0 | Application-generated UUIDv7 without a database extension dependency.                 |
+| vitest / `@vitest/coverage-v8`    |   3.2.4 | Unit/integration test runner and enforceable Money coverage thresholds.               |
+| testcontainers                    |  11.5.1 | Real Postgres integration tests when Docker is available; never SQLite/mocks for RLS. |
+| eslint                            |  9.34.0 | Flat-config linting and import-boundary enforcement.                                  |
+| typescript-eslint                 |  8.41.0 | Type-aware lint rules for strict TypeScript.                                          |
+| prettier                          |   3.6.2 | Deterministic formatting with no runtime effect.                                      |
+| tsx                               |  4.20.5 | Runs TypeScript migration/worker utilities without a bespoke build runner.            |
 
 No external-integration SDK is added in Phase 0. Date handling will initially use `Intl` plus explicit `Africa/Nairobi` helpers rather than introduce a second date abstraction; this remains subject to the business-day question below.
 

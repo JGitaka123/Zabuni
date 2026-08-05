@@ -23,28 +23,30 @@ Zabuni automates the loop and learns from it.
 
 **eTIMS compliance is the door; the agent loop is the product.**
 
-Since January 2024, eTIMS invoicing is mandatory for all Kenyan businesses, and from 1 January 2026 KRA's Income and Expense Validation Engine automatically cross-checks every income and expense line in a tax return against eTIMS invoice data. Non-compliant invoices mean disallowed expenses and audit flags — for the distributor *and* for their customer.
+Since January 2024, eTIMS invoicing is mandatory for all Kenyan businesses, and from 1 January 2026 KRA's Income and Expense Validation Engine automatically cross-checks every income and expense line in a tax return against eTIMS invoice data. Non-compliant invoices mean disallowed expenses and audit flags — for the distributor _and_ for their customer.
 
 That is a legally-forced, deadline-shaped, high-anxiety purchase trigger. It is also expensive and annoying to build, which keeps casual competitors out. We lead with it, and land the rest of the loop behind it.
 
 ## Documents
 
-| Doc | What it covers |
-|---|---|
-| [`CLAUDE.md`](./CLAUDE.md) | Operating instructions for Claude Code. Read first. |
-| [`docs/01-product-spec.md`](./docs/01-product-spec.md) | Users, jobs, scope, module-by-module functional spec |
-| [`docs/02-architecture.md`](./docs/02-architecture.md) | Stack, services, deployment, multi-tenancy, security |
-| [`docs/03-data-model.md`](./docs/03-data-model.md) | Postgres schema, RLS, the outcome ledger |
-| [`docs/04-agent-design.md`](./docs/04-agent-design.md) | Agent contract, cadence, feedback loop, guardrails |
-| [`docs/05-integrations.md`](./docs/05-integrations.md) | eTIMS, M-Pesa Daraja, WhatsApp Cloud API, email, Claude |
-| [`docs/06-billing-and-pricing.md`](./docs/06-billing-and-pricing.md) | Tiers, metering, M-Pesa recurring billing, unit economics |
-| [`docs/07-gtm-and-marketing.md`](./docs/07-gtm-and-marketing.md) | ICP, positioning, paid acquisition, onboarding funnel |
-| [`docs/08-build-plan.md`](./docs/08-build-plan.md) | Phased backlog, milestone acceptance criteria |
-| [`docs/09-moat-and-risks.md`](./docs/09-moat-and-risks.md) | Defensibility analysis, honest risk register, kill criteria |
+| Doc                                                                  | What it covers                                              |
+| -------------------------------------------------------------------- | ----------------------------------------------------------- |
+| [`CLAUDE.md`](./CLAUDE.md)                                           | Operating instructions for Claude Code. Read first.         |
+| [`docs/01-product-spec.md`](./docs/01-product-spec.md)               | Users, jobs, scope, module-by-module functional spec        |
+| [`docs/02-architecture.md`](./docs/02-architecture.md)               | Stack, services, deployment, multi-tenancy, security        |
+| [`docs/03-data-model.md`](./docs/03-data-model.md)                   | Postgres schema, RLS, the outcome ledger                    |
+| [`docs/04-agent-design.md`](./docs/04-agent-design.md)               | Agent contract, cadence, feedback loop, guardrails          |
+| [`docs/05-integrations.md`](./docs/05-integrations.md)               | eTIMS, M-Pesa Daraja, WhatsApp Cloud API, email, Claude     |
+| [`docs/06-billing-and-pricing.md`](./docs/06-billing-and-pricing.md) | Tiers, metering, M-Pesa recurring billing, unit economics   |
+| [`docs/07-gtm-and-marketing.md`](./docs/07-gtm-and-marketing.md)     | ICP, positioning, paid acquisition, onboarding funnel       |
+| [`docs/08-build-plan.md`](./docs/08-build-plan.md)                   | Phased backlog, milestone acceptance criteria               |
+| [`docs/09-moat-and-risks.md`](./docs/09-moat-and-risks.md)           | Defensibility analysis, honest risk register, kill criteria |
 
 ## Status
 
-Phase 0 foundation implementation is in progress. Safuney Limited is design partner zero — a real hygiene/PPE distributor with real receivables. Phase 1 ships to Safuney only.
+Phase 0 foundation is complete on the `codex/phase-0` branch. Safuney Limited is design partner zero — a real hygiene/PPE distributor with real receivables. Phase 1 ships to Safuney only after the external prerequisites and milestone decisions in the completion report are resolved.
+
+See [`docs/reports/phase-0-completion.md`](./docs/reports/phase-0-completion.md) for verification evidence, design decisions, and the prioritized gap register.
 
 ## Local foundation setup
 
@@ -68,4 +70,4 @@ docker compose -f infra/local/compose.yml down
 
 ## Name
 
-**Zabuni** — Swahili for *tender / bid / quotation*. Instantly legible to every procurement officer in Kenya, Tanzania and Uganda, which is exactly our expansion footprint. See `docs/07` for alternates and the domain checklist.
+**Zabuni** — Swahili for _tender / bid / quotation_. Instantly legible to every procurement officer in Kenya, Tanzania and Uganda, which is exactly our expansion footprint. See `docs/07` for alternates and the domain checklist.
