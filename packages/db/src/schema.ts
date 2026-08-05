@@ -289,3 +289,12 @@ export const incidents = pgTable(
 );
 
 export const schema = { tenants, users, items, usageEvents, outbox, incidents };
+
+export const tenantTableRegistry = [
+  { scopeColumn: "id", sqlName: "tenants", table: tenants },
+  { scopeColumn: "tenant_id", sqlName: "users", table: users },
+  { scopeColumn: "tenant_id", sqlName: "items", table: items },
+  { scopeColumn: "tenant_id", sqlName: "usage_events", table: usageEvents },
+  { scopeColumn: "tenant_id", sqlName: "outbox", table: outbox },
+  { scopeColumn: "tenant_id", sqlName: "incidents", table: incidents }
+] as const;

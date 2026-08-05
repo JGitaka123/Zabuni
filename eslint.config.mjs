@@ -21,8 +21,23 @@ export default tseslint.config(
     }
   },
   {
+    files: ["apps/**/*.ts", "apps/**/*.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@zabuni/db/admin",
+              message: "Request and worker code must use tenant-scoped database APIs."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     files: ["**/*.config.{js,mjs,ts}", "eslint.config.mjs"],
     ...tseslint.configs.disableTypeChecked
   }
 );
-

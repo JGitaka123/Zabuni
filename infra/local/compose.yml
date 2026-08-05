@@ -7,6 +7,8 @@ services:
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
+    volumes:
+      - ./postgres/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d zabuni"]
       interval: 2s
@@ -22,4 +24,3 @@ services:
       interval: 2s
       timeout: 2s
       retries: 20
-

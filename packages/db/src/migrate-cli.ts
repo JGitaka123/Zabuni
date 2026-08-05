@@ -11,6 +11,7 @@ if (connectionString === undefined || connectionString.length === 0) {
 const sql = postgres(connectionString, { max: 1, prepare: false });
 
 try {
+  await sql`SET ROLE zabuni_owner`;
   await applyMigrations(sql);
 } finally {
   await sql.end();

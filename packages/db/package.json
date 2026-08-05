@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./admin": { "types": "./dist/admin.d.ts", "import": "./dist/admin.js" },
     "./schema": { "types": "./dist/schema.d.ts", "import": "./dist/schema.js" },
     "./migrate": { "types": "./dist/migrate.d.ts", "import": "./dist/migrate.js" }
   },

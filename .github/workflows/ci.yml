@@ -43,7 +43,8 @@ jobs:
       NODE_ENV: test
       INTEGRATION_MODE: fixture
       DATABASE_URL: postgres://zabuni_app:zabuni_app@localhost:5432/zabuni
-      MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/zabuni
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@localhost:5432/zabuni
+      MIGRATION_DATABASE_URL: postgres://zabuni_migrator:zabuni_migrator@localhost:5432/zabuni
       REDIS_URL: redis://localhost:6379
       BETTER_AUTH_SECRET: ci-only-secret-that-is-at-least-32-characters
       BETTER_AUTH_URL: http://localhost:3001
@@ -62,4 +63,3 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
-

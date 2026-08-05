@@ -15,9 +15,22 @@ describe("forward-only migrations", () => {
       "0001_tenancy.sql",
       "0002_items.sql",
       "0003_usage_events.sql",
-      "0004_outbox.sql"
+      "0004_outbox.sql",
+      "0005_rls.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("enables and forces tenant RLS with restrictive boundaries", async () => {
+    const migrations = await readMigrations();
+    const rls = migrations.find(({ name }) => name === "0005_rls.sql")?.sql ?? "";
+
+    for (const table of ["tenants", "users", "items", "usage_events", "outbox", "incidents"]) {
+      expect(rls).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+      expect(rls).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
+      expect(rls).toContain(`CREATE POLICY ${table}_boundary ON ${table} AS RESTRICTIVE`);
+    }
+    expect(rls).toContain("current_setting('app.tenant_id', true)");
   });
 
   it("sorts migration files and ignores unrelated files", async () => {
