@@ -7,6 +7,7 @@ import {
 import type { MiddlewareHandler } from "hono";
 
 export interface SessionVariables {
+  correlationId: string;
   tenantSession: TenantSession;
 }
 

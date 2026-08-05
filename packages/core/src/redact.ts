@@ -6,6 +6,7 @@ export const REDACTED_MESSAGE = "[REDACTED_MESSAGE]";
 
 const KRA_PIN_PATTERN = /\b[A-Z]\d{9}[A-Z]\b/gi;
 const KENYAN_PHONE_PATTERN = /(?<!\d)(?:\+?254|0)(?:[\s().-]?\d){8,9}(?!\d)/g;
+const E164_PHONE_PATTERN = /(?<!\d)\+[1-9](?:[\s().-]?\d){7,14}(?!\d)/g;
 const CONTEXTUAL_OTP_PATTERN =
   /\b((?:one[- ]time (?:password|pin)|otp|verification code|security code|auth(?:entication)? code)\s*(?:is|:|=|-)?\s*)\d{4,8}\b/gi;
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
@@ -45,6 +46,7 @@ function normalizedKey(key: string): string {
 export function redactText(value: string): string {
   return value
     .replaceAll(KRA_PIN_PATTERN, REDACTED_KRA_PIN)
+    .replaceAll(E164_PHONE_PATTERN, REDACTED_PHONE)
     .replaceAll(KENYAN_PHONE_PATTERN, REDACTED_PHONE)
     .replaceAll(EMAIL_PATTERN, REDACTED_EMAIL)
     .replaceAll(CONTEXTUAL_OTP_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_OTP}`);

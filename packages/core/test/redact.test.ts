@@ -45,6 +45,12 @@ describe("redaction", () => {
     expect(JSON.stringify(output)).not.toContain("private");
   });
 
+  it("scrubs non-Kenyan E.164 numbers accepted by authentication", () => {
+    expect(redactText("Uganda +256 712 345 678, Tanzania +255712345678")).toBe(
+      `Uganda ${REDACTED_PHONE}, Tanzania ${REDACTED_PHONE}`
+    );
+  });
+
   it("recursively scrubs sensitive structured keys and arbitrary text", () => {
     const input = {
       phone_number: "+254712345678",

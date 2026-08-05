@@ -29,6 +29,7 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
     const telemetry = dependencies.telemetry;
     app.use("*", async (context, next) => {
       const correlationId = randomUUID();
+      context.set("correlationId", correlationId);
       const startedAt = performance.now();
       await next();
       telemetry.logger.info(
@@ -43,7 +44,7 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
       );
     });
     app.onError((error, context) => {
-      const correlationId = randomUUID();
+      const correlationId = context.get("correlationId");
       telemetry.logger.error("request_failed", { correlationId }, { error });
       telemetry.errors.capture(error, { correlationId });
       return context.json({ error: "internal_error", correlationId }, 500);
