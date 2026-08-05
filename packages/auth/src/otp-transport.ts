@@ -6,11 +6,16 @@ export interface OtpTransport {
 }
 
 export class UnconfiguredOtpTransport implements OtpTransport {
-  sendPhoneOtp(): Promise<never> {
+  sendPhoneOtp(phoneNumber: string, code: string): Promise<never> {
+    void phoneNumber;
+    void code;
     return Promise.reject(new Error("Live SMS OTP delivery is not configured"));
   }
 
-  sendEmailOtp(): Promise<never> {
+  sendEmailOtp(email: string, code: string, purpose: EmailOtpPurpose): Promise<never> {
+    void email;
+    void code;
+    void purpose;
     return Promise.reject(new Error("Live email OTP delivery is not configured"));
   }
 }

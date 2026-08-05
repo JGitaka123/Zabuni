@@ -6,10 +6,18 @@ import {
   UnconfiguredOtpTransport
 } from "@zabuni/auth";
 import { createTenantRuntime } from "@zabuni/db";
+import { createPinoStructuredLogger, initializeNodeSentry } from "@zabuni/observability";
 
 import { createApp } from "./app.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3001", 10);
+const environment = process.env.NODE_ENV ?? "development";
+const logger = createPinoStructuredLogger({ service: "api", environment });
+const errors = initializeNodeSentry({
+  environment,
+  integrationMode: process.env.INTEGRATION_MODE === "live" ? "live" : "fixture",
+  ...(process.env.SENTRY_DSN === undefined ? {} : { dsn: process.env.SENTRY_DSN })
+});
 const databaseUrl = process.env.DATABASE_URL;
 const authDatabaseUrl = process.env.DATABASE_AUTH_URL;
 const authSecret = process.env.BETTER_AUTH_SECRET;
@@ -33,7 +41,13 @@ const memberships = createMembershipRuntime(databaseUrl);
 const tenantRuntime = createTenantRuntime(databaseUrl);
 
 serve({
-  fetch: createApp({ auth: authRuntime.auth, memberships, tenants: tenantRuntime, webOrigin })
-    .fetch,
+  fetch: createApp({
+    auth: authRuntime.auth,
+    memberships,
+    tenants: tenantRuntime,
+    webOrigin,
+    telemetry: { logger, errors }
+  }).fetch,
   port
 });
+logger.info("service_started", { correlationId: "startup" }, { port });

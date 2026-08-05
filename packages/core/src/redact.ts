@@ -1,13 +1,14 @@
 export const REDACTED_PHONE = "[REDACTED_PHONE]";
 export const REDACTED_KRA_PIN = "[REDACTED_KRA_PIN]";
 export const REDACTED_OTP = "[REDACTED_OTP]";
+export const REDACTED_EMAIL = "[REDACTED_EMAIL]";
 export const REDACTED_MESSAGE = "[REDACTED_MESSAGE]";
 
 const KRA_PIN_PATTERN = /\b[A-Z]\d{9}[A-Z]\b/gi;
-const KENYAN_PHONE_PATTERN =
-  /(?<!\d)(?:\+?254|0)(?:[\s().-]?\d){8,9}(?!\d)/g;
+const KENYAN_PHONE_PATTERN = /(?<!\d)(?:\+?254|0)(?:[\s().-]?\d){8,9}(?!\d)/g;
 const CONTEXTUAL_OTP_PATTERN =
   /\b((?:one[- ]time (?:password|pin)|otp|verification code|security code|auth(?:entication)? code)\s*(?:is|:|=|-)?\s*)\d{4,8}\b/gi;
+const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 
 const PHONE_KEYS = new Set([
   "phone",
@@ -18,16 +19,10 @@ const PHONE_KEYS = new Set([
   "contactphone",
   "customerphone",
   "recipientphone",
-  "senderphone",
+  "senderphone"
 ]);
 const KRA_PIN_KEYS = new Set(["krapin", "taxpin"]);
-const OTP_KEYS = new Set([
-  "otp",
-  "otpcode",
-  "onetimepassword",
-  "verificationcode",
-  "securitycode",
-]);
+const OTP_KEYS = new Set(["otp", "otpcode", "onetimepassword", "verificationcode", "securitycode"]);
 const MESSAGE_KEYS = new Set([
   "message",
   "messagebody",
@@ -40,7 +35,7 @@ const MESSAGE_KEYS = new Set([
   "rawbody",
   "requestbody",
   "responsebody",
-  "text",
+  "text"
 ]);
 
 function normalizedKey(key: string): string {
@@ -51,10 +46,8 @@ export function redactText(value: string): string {
   return value
     .replaceAll(KRA_PIN_PATTERN, REDACTED_KRA_PIN)
     .replaceAll(KENYAN_PHONE_PATTERN, REDACTED_PHONE)
-    .replaceAll(
-      CONTEXTUAL_OTP_PATTERN,
-      (_match, prefix: string) => `${prefix}${REDACTED_OTP}`,
-    );
+    .replaceAll(EMAIL_PATTERN, REDACTED_EMAIL)
+    .replaceAll(CONTEXTUAL_OTP_PATTERN, (_match, prefix: string) => `${prefix}${REDACTED_OTP}`);
 }
 
 function replacementForKey(key: string): string | undefined {

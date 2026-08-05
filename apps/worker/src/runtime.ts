@@ -1,6 +1,6 @@
 import { createOutboxWorkerStore } from "@zabuni/db/privileged/outbox";
 
-import { OutboxDrainWorker, type OutboxHandler } from "./outbox.js";
+import { OutboxDrainWorker, type OutboxHandler, type WorkerTelemetry } from "./outbox.js";
 
 export interface DatabaseDrainRuntime {
   readonly worker: OutboxDrainWorker;
@@ -9,11 +9,12 @@ export interface DatabaseDrainRuntime {
 
 export function createDatabaseDrainRuntime(
   workerDatabaseUrl: string,
-  handlers: readonly OutboxHandler[]
+  handlers: readonly OutboxHandler[],
+  telemetry?: WorkerTelemetry
 ): DatabaseDrainRuntime {
   const repository = createOutboxWorkerStore(workerDatabaseUrl);
   return {
-    worker: new OutboxDrainWorker(repository, handlers),
+    worker: new OutboxDrainWorker(repository, handlers, telemetry),
     close: repository.close
   };
 }

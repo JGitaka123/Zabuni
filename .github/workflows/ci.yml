@@ -61,6 +61,11 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Provision database roles
+        run: |
+          psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/00-roles.sql
+          psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/01-auth-role.sql
+          psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/02-worker-role.sql
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test

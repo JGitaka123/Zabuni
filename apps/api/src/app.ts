@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 import { verifyRequestSession, type AuthServer, type MembershipRuntime } from "@zabuni/auth";
 import { tenants, users, type TenantRuntime } from "@zabuni/db";
+import type { ErrorReporter, StructuredLogger } from "@zabuni/observability";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -11,12 +14,41 @@ export interface AppDependencies {
   readonly memberships: MembershipRuntime;
   readonly tenants: TenantRuntime;
   readonly webOrigin: string;
+  readonly telemetry?: {
+    readonly logger: StructuredLogger;
+    readonly errors: ErrorReporter;
+  };
 }
 
 export function createApp(dependencies?: AppDependencies): Hono<{ Variables: SessionVariables }> {
   const app = new Hono<{ Variables: SessionVariables }>();
   app.get("/health", (context) => context.json({ status: "ok" }));
   if (dependencies === undefined) return app;
+
+  if (dependencies.telemetry !== undefined) {
+    const telemetry = dependencies.telemetry;
+    app.use("*", async (context, next) => {
+      const correlationId = randomUUID();
+      const startedAt = performance.now();
+      await next();
+      telemetry.logger.info(
+        "request_completed",
+        { correlationId },
+        {
+          method: context.req.method,
+          path: context.req.path,
+          status: context.res.status,
+          durationMs: Math.round(performance.now() - startedAt)
+        }
+      );
+    });
+    app.onError((error, context) => {
+      const correlationId = randomUUID();
+      telemetry.logger.error("request_failed", { correlationId }, { error });
+      telemetry.errors.capture(error, { correlationId });
+      return context.json({ error: "internal_error", correlationId }, 500);
+    });
+  }
 
   app.use(
     "*",

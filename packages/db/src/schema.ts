@@ -28,6 +28,7 @@ export const usageMetrics = [
   "wa_template_sent",
   "sms_sent",
   "llm_tokens",
+  "llm_call",
   "payment_processed"
 ] as const;
 export type UsageMetric = (typeof usageMetrics)[number];
@@ -325,6 +326,7 @@ export const usageEvents = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "date" }).notNull(),
     unitCostMinor: bigint("unit_cost_minor", { mode: "bigint" }).notNull(),
     costCurrency: char("cost_currency", { length: 3 }).notNull(),
+    idempotencyKey: text("idempotency_key"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt()
   },
@@ -336,13 +338,20 @@ export const usageEvents = pgTable(
     }).onDelete("cascade"),
     uniqueIndex("usage_events_tenant_id_id_unique").on(table.tenantId, table.id),
     index("usage_events_tenant_occurred_idx").on(table.tenantId, table.occurredAt),
+    uniqueIndex("usage_events_tenant_idempotency_unique")
+      .on(table.tenantId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
     check(
       "usage_events_metric_check",
-      sql`${table.metric} IN ('rfq_parsed', 'quote_sent', 'invoice_transmitted', 'wa_template_sent', 'sms_sent', 'llm_tokens', 'payment_processed')`
+      sql`${table.metric} IN ('rfq_parsed', 'quote_sent', 'invoice_transmitted', 'wa_template_sent', 'sms_sent', 'llm_tokens', 'llm_call', 'payment_processed')`
     ),
     check("usage_events_quantity_positive_check", sql`${table.quantity} > 0`),
     check("usage_events_unit_cost_nonnegative_check", sql`${table.unitCostMinor} >= 0`),
-    check("usage_events_currency_check", sql`${table.costCurrency} ~ '^[A-Z]{3}$'`)
+    check("usage_events_currency_check", sql`${table.costCurrency} ~ '^[A-Z]{3}$'`),
+    check(
+      "usage_events_idempotency_key_check",
+      sql`${table.idempotencyKey} IS NULL OR (btrim(${table.idempotencyKey}) <> '' AND length(${table.idempotencyKey}) <= 128)`
+    )
   ]
 );
 

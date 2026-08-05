@@ -1,3 +1,5 @@
+import type { ErrorReporter, StructuredLogger } from "@zabuni/observability";
+
 export interface OutboxClaim {
   readonly id: string;
   readonly tenantId: string;
@@ -64,6 +66,11 @@ export interface DrainResult {
   readonly stale: number;
 }
 
+export interface WorkerTelemetry {
+  readonly logger: StructuredLogger;
+  readonly errors: ErrorReporter;
+}
+
 function stableHash(value: string): number {
   let hash = 2_166_136_261;
   for (const character of value) {
@@ -87,9 +94,15 @@ export function retryDelaySeconds(idempotencyKey: string, attemptCount: number):
 export class OutboxDrainWorker {
   readonly #repository: OutboxRepository;
   readonly #handlers: ReadonlyMap<string, OutboxHandler>;
+  readonly #telemetry: WorkerTelemetry | undefined;
 
-  public constructor(repository: OutboxRepository, handlers: readonly OutboxHandler[]) {
+  public constructor(
+    repository: OutboxRepository,
+    handlers: readonly OutboxHandler[],
+    telemetry?: WorkerTelemetry
+  ) {
     this.#repository = repository;
+    this.#telemetry = telemetry;
     const registry = new Map<string, OutboxHandler>();
     for (const handler of handlers) {
       const key = `${handler.eventType}:${String(handler.payloadVersion)}`;
@@ -119,6 +132,11 @@ export class OutboxDrainWorker {
         });
         if (updated) result.failedPermanent++;
         else result.stale++;
+        this.#telemetry?.logger.error(
+          "delivery_unsupported",
+          { correlationId: claim.claimToken, jobId: claim.id, tenantId: claim.tenantId },
+          { eventType: claim.eventType, payloadVersion: claim.payloadVersion }
+        );
         continue;
       }
 
@@ -128,9 +146,20 @@ export class OutboxDrainWorker {
         const updated = await this.#repository.markSent(claim, delivery.resultRef);
         if (updated) result.sent++;
         else result.stale++;
+        this.#telemetry?.logger.info(
+          "delivery_succeeded",
+          { correlationId: claim.claimToken, jobId: claim.id, tenantId: claim.tenantId },
+          { attemptCount: claim.attemptCount, stale: !updated }
+        );
       } catch (error) {
         if (error instanceof SimulatedWorkerCrash) throw error;
         const permanent = error instanceof PermanentDeliveryError;
+        const context = {
+          correlationId: claim.claimToken,
+          jobId: claim.id,
+          tenantId: claim.tenantId
+        };
+        if (!permanent) this.#telemetry?.errors.capture(error, context);
         const updated = await this.#repository.markFailed(claim, {
           errorCode: permanent ? "permanent_rejection" : "transport_unavailable",
           permanent,
@@ -141,6 +170,11 @@ export class OutboxDrainWorker {
         if (!updated) result.stale++;
         else if (permanent || claim.attemptCount >= claim.maxAttempts) result.failedPermanent++;
         else result.retried++;
+        const event = permanent ? "delivery_failed_permanent" : "delivery_retry_scheduled";
+        this.#telemetry?.logger[permanent ? "error" : "warn"](event, context, {
+          attemptCount: claim.attemptCount,
+          stale: !updated
+        });
       }
     }
 

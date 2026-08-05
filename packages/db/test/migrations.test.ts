@@ -18,9 +18,22 @@ describe("forward-only migrations", () => {
       "0004_outbox.sql",
       "0005_rls.sql",
       "0006_auth.sql",
-      "0007_outbox_worker.sql"
+      "0007_outbox_worker.sql",
+      "0008_observability.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("adds retry-safe total-event LLM call metering", async () => {
+    const migrations = await readMigrations();
+    const observability =
+      migrations.find(({ name }) => name === "0008_observability.sql")?.sql ?? "";
+
+    expect(observability).toContain("'llm_call'");
+    expect(observability).toContain("ADD COLUMN idempotency_key text");
+    expect(observability).toContain("usage_events_tenant_idempotency_unique");
+    expect(observability).toContain("WHERE idempotency_key IS NOT NULL");
+    expect(observability).toContain("Total event cost in minor currency units");
   });
 
   it("enables and forces tenant RLS with restrictive boundaries", async () => {

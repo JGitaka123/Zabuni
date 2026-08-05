@@ -12,7 +12,8 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@zabuni/db": "workspace:*"
+    "@zabuni/db": "workspace:*",
+    "@zabuni/observability": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "22.18.0",
