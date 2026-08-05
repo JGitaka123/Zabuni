@@ -66,21 +66,34 @@ async function provisionRuntimeRole(): Promise<void> {
         CREATE ROLE zabuni_auth LOGIN PASSWORD 'zabuni_auth'
           NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
       END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zabuni_outbox_claim_owner') THEN
+        CREATE ROLE zabuni_outbox_claim_owner NOLOGIN
+          NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT BYPASSRLS;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zabuni_worker') THEN
+        CREATE ROLE zabuni_worker LOGIN PASSWORD 'zabuni_worker'
+          NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+      END IF;
     END
     $roles$;
     ALTER ROLE zabuni_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     ALTER ROLE zabuni_migrator LOGIN PASSWORD 'zabuni_migrator' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     ALTER ROLE zabuni_app LOGIN PASSWORD 'zabuni_app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     ALTER ROLE zabuni_auth LOGIN PASSWORD 'zabuni_auth' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+    ALTER ROLE zabuni_outbox_claim_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT BYPASSRLS;
+    ALTER ROLE zabuni_worker LOGIN PASSWORD 'zabuni_worker' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     GRANT zabuni_owner TO zabuni_migrator;
+    GRANT zabuni_outbox_claim_owner TO zabuni_owner;
     REVOKE zabuni_owner, zabuni_migrator FROM zabuni_app;
     REVOKE zabuni_owner, zabuni_migrator, zabuni_app FROM zabuni_auth;
-    GRANT CONNECT ON DATABASE zabuni TO zabuni_migrator, zabuni_app, zabuni_auth;
+    REVOKE zabuni_outbox_claim_owner, zabuni_owner, zabuni_migrator FROM zabuni_worker;
+    GRANT CONNECT ON DATABASE zabuni TO zabuni_migrator, zabuni_app, zabuni_auth, zabuni_worker;
     GRANT CREATE ON DATABASE zabuni TO zabuni_owner;
     GRANT USAGE, CREATE ON SCHEMA public TO zabuni_owner;
     GRANT USAGE ON SCHEMA public TO zabuni_migrator;
     GRANT USAGE ON SCHEMA public TO zabuni_app;
     GRANT USAGE ON SCHEMA public TO zabuni_auth;
+    GRANT USAGE ON SCHEMA public TO zabuni_outbox_claim_owner, zabuni_worker;
   `);
 }
 
@@ -101,8 +114,8 @@ beforeAll(async () => {
   `;
   await admin`
     INSERT INTO auth_identity (id, name, email, email_verified)
-    VALUES (${ids.identityA}, 'A Identity', 'identity-a@example.test', true),
-           (${ids.identityB}, 'B Identity', 'identity-b@example.test', true)
+    VALUES (${ids.identityA}, 'A Identity', ${`identity-${ids.identityA}@example.test`}, true),
+           (${ids.identityB}, 'B Identity', ${`identity-${ids.identityB}@example.test`}, true)
   `;
   await admin`
     INSERT INTO auth_membership (id, identity_id, tenant_id, user_id, role)
@@ -132,6 +145,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await admin`DELETE FROM tenants WHERE id IN (${tenantA}, ${tenantB})`;
   await app.client.end();
   await migrator.end();
   await admin.end();
@@ -249,9 +263,10 @@ describe("tenant RLS through Drizzle", () => {
   it("serializes first-tenant provisioning for one verified identity", async () => {
     const concurrentApp = createDatabase(appUrl, { maxConnections: 2 });
     const identityId = createEntityId();
+    const legalName = `Concurrent Tenant ${identityId}`;
     await admin`
       INSERT INTO auth_identity (id, name, email, email_verified)
-      VALUES (${identityId}, 'Concurrent Owner', 'concurrent@example.test', true)
+      VALUES (${identityId}, 'Concurrent Owner', ${`concurrent-${identityId}@example.test`}, true)
     `;
     const provision = () =>
       concurrentApp.db.execute(sql`
@@ -261,7 +276,7 @@ describe("tenant RLS through Drizzle", () => {
           ${createEntityId()}::uuid,
           ${createEntityId()}::uuid,
           ${createEntityId()}::uuid,
-          'Concurrent Tenant'
+          ${legalName}
         )
       `);
 
@@ -273,7 +288,7 @@ describe("tenant RLS through Drizzle", () => {
       SELECT
         (SELECT count(*)::int FROM auth_membership WHERE identity_id = ${identityId}) AS memberships,
         (SELECT count(*)::int FROM auth_onboarding_audit WHERE identity_id = ${identityId}) AS audits,
-        (SELECT count(*)::int FROM tenants WHERE legal_name = 'Concurrent Tenant') AS tenants
+        (SELECT count(*)::int FROM tenants WHERE legal_name = ${legalName}) AS tenants
     `;
     expect(counts).toEqual({ audits: 1, memberships: 1, tenants: 1 });
   });
@@ -339,7 +354,9 @@ describe("tenant RLS through Drizzle", () => {
       SELECT cmd, permissive, policyname, qual, roles, tablename, with_check AS "withCheck"
       FROM pg_policies WHERE schemaname = 'public'
     `;
-    const boundaries = policies.filter(({ policyname }) => policyname.endsWith("_boundary"));
+    const boundaries = policies.filter(
+      ({ policyname, roles }) => policyname.endsWith("_boundary") && roles.includes("zabuni_app")
+    );
     expect(boundaries).toHaveLength(registeredNames.length);
     for (const { scopeColumn, sqlName } of tenantTableRegistry) {
       const boundary = boundaries.find(({ tablename }) => tablename === sqlName);
@@ -370,7 +387,6 @@ describe("tenant RLS through Drizzle", () => {
       grants.filter(({ privilege }) => privilege === "DELETE" || privilege === "UPDATE")
     ).toEqual([]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
-      { privilege: "INSERT", tableName: "outbox" },
       { privilege: "INSERT", tableName: "usage_events" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(

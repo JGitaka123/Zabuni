@@ -364,6 +364,7 @@ export const outbox = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true, mode: "date" }),
     claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true, mode: "date" }),
     claimedBy: text("claimed_by"),
+    claimToken: uuid("claim_token"),
     lastError: text("last_error"),
     resultRef: text("result_ref"),
     terminalAt: timestamp("terminal_at", { withTimezone: true, mode: "date" }),

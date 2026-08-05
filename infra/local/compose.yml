@@ -10,6 +10,7 @@ services:
     volumes:
       - ./postgres/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
       - ./postgres/01-auth-role.sql:/docker-entrypoint-initdb.d/01-auth-role.sql:ro
+      - ./postgres/02-worker-role.sql:/docker-entrypoint-initdb.d/02-worker-role.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d zabuni"]
       interval: 2s

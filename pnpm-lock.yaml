@@ -102,6 +102,10 @@ importers:
         version: 3.2.4(@types/node@22.18.0)(tsx@4.20.5)
 
   apps/worker:
+    dependencies:
+      '@zabuni/db':
+        specifier: workspace:*
+        version: link:../../packages/db
     devDependencies:
       '@types/node':
         specifier: 22.18.0
@@ -168,6 +172,22 @@ importers:
       tsx:
         specifier: 4.20.5
         version: 4.20.5
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.18.0)(tsx@4.20.5)
+
+  packages/observability:
+    dependencies:
+      '@zabuni/core':
+        specifier: workspace:*
+        version: link:../core
+      '@zabuni/db':
+        specifier: workspace:*
+        version: link:../db
+    devDependencies:
       typescript:
         specifier: 5.9.2
         version: 5.9.2

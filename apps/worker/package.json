@@ -11,6 +11,9 @@
     "test:coverage": "vitest run --coverage",
     "dev": "tsx watch src/index.ts"
   },
+  "dependencies": {
+    "@zabuni/db": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "22.18.0",
     "tsx": "4.20.5",

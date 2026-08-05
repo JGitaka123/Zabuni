@@ -7,4 +7,3 @@ describe("worker foundation", () => {
     expect(workerStatus).toBe("ready");
   });
 });
-

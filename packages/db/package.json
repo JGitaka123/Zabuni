@@ -4,10 +4,26 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./admin": { "types": "./dist/admin.d.ts", "import": "./dist/admin.js" },
-    "./schema": { "types": "./dist/schema.d.ts", "import": "./dist/schema.js" },
-    "./migrate": { "types": "./dist/migrate.d.ts", "import": "./dist/migrate.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./admin": {
+      "types": "./dist/admin.d.ts",
+      "import": "./dist/admin.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    },
+    "./migrate": {
+      "types": "./dist/migrate.d.ts",
+      "import": "./dist/migrate.js"
+    },
+    "./privileged/outbox": {
+      "types": "./dist/privileged/outbox.d.ts",
+      "import": "./dist/privileged/outbox.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

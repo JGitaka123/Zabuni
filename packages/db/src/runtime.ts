@@ -16,4 +16,3 @@ export function createTenantRuntime(connectionString: string): TenantRuntime {
     run: (verifiedTenantId, operation) => withTenant(connection.db, verifiedTenantId, operation)
   };
 }
-
