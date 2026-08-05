@@ -247,9 +247,11 @@ describe("durable outbox drain", () => {
       idempotencyKey: sharedKey
     });
     const { transport, worker } = createFixture(repository);
-    await expect(worker.drain({ workerId: "worker-a", batchSize: 2 })).resolves.toMatchObject({
-      sent: 2
-    });
+    await expect(worker.drain({ workerId: "worker-a", batchSize: 2 })).rejects.toThrow(
+      "batch size must remain 1"
+    );
+    await expect(worker.drain({ workerId: "worker-a" })).resolves.toMatchObject({ sent: 1 });
+    await expect(worker.drain({ workerId: "worker-a" })).resolves.toMatchObject({ sent: 1 });
     expect(transport.effectCount(first.tenantId, sharedKey)).toBe(1);
     expect(transport.effectCount(second.tenantId, sharedKey)).toBe(1);
     expect(first.resultRef).not.toBe(second.resultRef);

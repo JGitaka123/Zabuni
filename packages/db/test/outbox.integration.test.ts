@@ -156,6 +156,12 @@ describe("Postgres outbox worker boundary", () => {
   });
 
   it("fails closed without tenant context and exposes only the claim function cross-tenant", async () => {
+    await expect(
+      workerA`SELECT * FROM app.claim_outbox('worker-null-batch', NULL, 60)`
+    ).rejects.toThrow(/batch size must be 1/);
+    await expect(
+      workerA`SELECT * FROM app.claim_outbox('worker-wide-batch', 2, 60)`
+    ).rejects.toThrow(/batch size must be 1/);
     await expect(workerA`SELECT id FROM outbox`).rejects.toMatchObject({ code: "42501" });
     await expect(workerA`UPDATE outbox SET state = 'sent'`).rejects.toMatchObject({
       code: "42501"
@@ -224,6 +230,16 @@ describe("Postgres outbox worker boundary", () => {
         await transaction`SELECT set_config('app.tenant_id', ${tenantA}, true)`;
         await transaction`
           INSERT INTO outbox (
+            id, tenant_id, event_type, payload_version, payload, idempotency_key, max_attempts
+          ) VALUES (${createEntityId()}, ${tenantA}, 'fixture.delivery', 1, '{}'::jsonb, '', 3)
+        `;
+      })
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      app.begin(async (transaction) => {
+        await transaction`SELECT set_config('app.tenant_id', ${tenantA}, true)`;
+        await transaction`
+          INSERT INTO outbox (
             id, tenant_id, event_type, payload_version, payload, idempotency_key,
             max_attempts, state, claimed_by, claim_token, claimed_at, claim_expires_at
           ) VALUES (
@@ -241,13 +257,19 @@ describe("Postgres outbox worker boundary", () => {
       enqueue(tenantA, `recover-a-${createEntityId()}`),
       enqueue(tenantB, `recover-b-${createEntityId()}`)
     ]);
-    const claims = await store.claim("worker-crashed", 2, 5);
+    const claims = [
+      ...(await store.claim("worker-crashed", 1, 5)),
+      ...(await store.claim("worker-crashed", 1, 5))
+    ];
     expect(new Set(claims.map(({ id }) => id))).toEqual(new Set(ids));
     await admin`
       UPDATE outbox SET claim_expires_at = now() - interval '1 second'
       WHERE id = ANY(${ids})
     `;
-    const recovered = await store.claim("worker-recovery", 2, 5);
+    const recovered = [
+      ...(await store.claim("worker-recovery", 1, 5)),
+      ...(await store.claim("worker-recovery", 1, 5))
+    ];
     expect(new Set(recovered.map(({ id }) => id))).toEqual(new Set(ids));
     for (const claim of recovered) {
       await expect(store.markSent(claim, `recovered:${claim.id}`)).resolves.toBe(true);

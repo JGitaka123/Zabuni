@@ -19,7 +19,8 @@ describe("forward-only migrations", () => {
       "0005_rls.sql",
       "0006_auth.sql",
       "0007_outbox_worker.sql",
-      "0008_observability.sql"
+      "0008_observability.sql",
+      "0009_outbox_claim_hardening.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });

@@ -29,6 +29,26 @@ export default tseslint.config(
     }
   },
   {
+    files: ["apps/api/**/*.ts", "apps/api/**/*.tsx", "apps/web/**/*.ts", "apps/web/**/*.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@zabuni/db/admin",
+              message: "Request-path code must use tenant-scoped database APIs."
+            },
+            {
+              name: "@zabuni/db/privileged/outbox",
+              message: "Request-path code must never import the cross-tenant outbox boundary."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     files: ["apps/**/*.ts", "apps/**/*.tsx"],
     rules: {
       "no-restricted-imports": [

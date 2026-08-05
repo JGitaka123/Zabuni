@@ -66,7 +66,10 @@ export function createOutboxWorkerStore(connectionString: string): OutboxWorkerS
 
   return {
     close: () => connection.client.end(),
-    claim: async (workerId, batchSize = 10, leaseSeconds = 60) => {
+    claim: async (workerId, batchSize = 1, leaseSeconds = 60) => {
+      if (!Number.isInteger(batchSize) || batchSize !== 1) {
+        throw new Error("Outbox claim batch size must remain 1 until lease renewal is implemented");
+      }
       const rows = await connection.db.execute<{
         id: string;
         tenantId: string;

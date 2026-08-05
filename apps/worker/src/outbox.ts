@@ -115,11 +115,11 @@ export class OutboxDrainWorker {
   }
 
   public async drain(options: DrainOptions): Promise<DrainResult> {
-    const claims = await this.#repository.claim(
-      options.workerId,
-      options.batchSize,
-      options.leaseSeconds
-    );
+    const batchSize = options.batchSize ?? 1;
+    if (batchSize !== 1) {
+      throw new Error("Outbox drain batch size must remain 1 until lease renewal is implemented");
+    }
+    const claims = await this.#repository.claim(options.workerId, batchSize, options.leaseSeconds);
     const result = { claimed: claims.length, sent: 0, retried: 0, failedPermanent: 0, stale: 0 };
 
     for (const claim of claims) {
