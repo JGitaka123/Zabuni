@@ -15,3 +15,48 @@ main {
   padding: 4rem 1.5rem;
 }
 
+.panel {
+  max-width: 32rem;
+  padding: 2rem;
+  background: white;
+  border: 1px solid #d8ddd9;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+}
+form {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+input,
+button {
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+.tabs button[aria-pressed="true"] {
+  background: #17211b;
+  color: white;
+}
+dl {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.75rem;
+}
+dt {
+  color: #59635d;
+}
+dd {
+  margin: 0;
+}

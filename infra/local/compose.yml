@@ -9,6 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
+      - ./postgres/01-auth-role.sql:/docker-entrypoint-initdb.d/01-auth-role.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d zabuni"]
       interval: 2s
@@ -16,7 +17,8 @@ services:
       retries: 20
   redis:
     image: redis:7.4.0-alpine@sha256:c35af3bbcef51a62c8bae5a9a563c6f1b60d7ebaea4cb5a3ccbcc157580ae098
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    command:
+      ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
     ports:
       - "6379:6379"
     healthcheck:

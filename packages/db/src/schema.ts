@@ -106,6 +106,152 @@ export const users = pgTable(
   ]
 );
 
+// Better Auth identities are global so a session can be verified before a tenant
+// RLS context exists. Domain users remain tenant-owned in `users` and are linked
+// through `auth_memberships`.
+export const authIdentities = pgTable(
+  "auth_identity",
+  {
+    id: uuid("id").primaryKey(),
+    name: text("name").notNull(),
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    image: text("image"),
+    phoneNumber: text("phone_number"),
+    phoneNumberVerified: boolean("phone_number_verified").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("auth_identity_email_unique").on(sql`lower(${table.email})`),
+    uniqueIndex("auth_identity_phone_unique")
+      .on(table.phoneNumber)
+      .where(sql`${table.phoneNumber} IS NOT NULL`)
+  ]
+);
+
+export const authSessions = pgTable(
+  "auth_session",
+  {
+    id: uuid("id").primaryKey(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    token: text("token").notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: uuid("user_id").notNull()
+  },
+  (table) => [
+    uniqueIndex("auth_session_token_unique").on(table.token),
+    index("auth_session_user_idx").on(table.userId),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [authIdentities.id],
+      name: "auth_session_user_id_fk"
+    }).onDelete("cascade")
+  ]
+);
+
+export const authAccounts = pgTable(
+  "auth_account",
+  {
+    id: uuid("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+      mode: "date"
+    }),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+      withTimezone: true,
+      mode: "date"
+    }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("auth_account_provider_unique").on(table.providerId, table.accountId),
+    index("auth_account_user_idx").on(table.userId),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [authIdentities.id],
+      name: "auth_account_user_id_fk"
+    }).onDelete("cascade")
+  ]
+);
+
+export const authVerifications = pgTable(
+  "auth_verification",
+  {
+    id: uuid("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [index("auth_verification_identifier_idx").on(table.identifier)]
+);
+
+export const authRateLimits = pgTable(
+  "auth_rate_limit",
+  {
+    id: uuid("id").primaryKey(),
+    key: text("key").notNull(),
+    count: integer("count").notNull(),
+    lastRequest: bigint("last_request", { mode: "number" }).notNull()
+  },
+  (table) => [uniqueIndex("auth_rate_limit_key_unique").on(table.key)]
+);
+
+export const authMemberships = pgTable(
+  "auth_membership",
+  {
+    id: uuid("id").primaryKey(),
+    identityId: uuid("identity_id").notNull(),
+    tenantId: uuid("tenant_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    role: text("role").$type<TenantRole>().notNull(),
+    status: text("status").$type<"active" | "suspended">().notNull().default("active"),
+    createdAt: createdAt()
+  },
+  (table) => [
+    uniqueIndex("auth_membership_identity_unique").on(table.identityId),
+    uniqueIndex("auth_membership_tenant_user_unique").on(table.tenantId, table.userId),
+    foreignKey({
+      columns: [table.identityId],
+      foreignColumns: [authIdentities.id],
+      name: "auth_membership_identity_id_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tenantId, table.userId],
+      foreignColumns: [users.tenantId, users.id],
+      name: "auth_membership_tenant_user_fk"
+    }).onDelete("cascade"),
+    check(
+      "auth_membership_role_check",
+      sql`${table.role} IN ('owner', 'manager', 'sales', 'finance', 'readonly')`
+    ),
+    check("auth_membership_status_check", sql`${table.status} IN ('active', 'suspended')`)
+  ]
+);
+
+export const authOnboardingAudit = pgTable("auth_onboarding_audit", {
+  id: uuid("id").primaryKey(),
+  identityId: uuid("identity_id").notNull(),
+  scopeId: uuid("scope_id").notNull(),
+  membershipId: uuid("membership_id").notNull(),
+  action: text("action").notNull(),
+  createdAt: createdAt()
+});
+
 export const items = pgTable(
   "items",
   {
@@ -288,11 +434,26 @@ export const incidents = pgTable(
   ]
 );
 
-export const schema = { tenants, users, items, usageEvents, outbox, incidents };
+export const schema = {
+  tenants,
+  users,
+  authIdentities,
+  authSessions,
+  authAccounts,
+  authVerifications,
+  authRateLimits,
+  authMemberships,
+  authOnboardingAudit,
+  items,
+  usageEvents,
+  outbox,
+  incidents
+};
 
 export const tenantTableRegistry = [
   { scopeColumn: "id", sqlName: "tenants", table: tenants },
   { scopeColumn: "tenant_id", sqlName: "users", table: users },
+  { scopeColumn: "tenant_id", sqlName: "auth_membership", table: authMemberships },
   { scopeColumn: "tenant_id", sqlName: "items", table: items },
   { scopeColumn: "tenant_id", sqlName: "usage_events", table: usageEvents },
   { scopeColumn: "tenant_id", sqlName: "outbox", table: outbox },

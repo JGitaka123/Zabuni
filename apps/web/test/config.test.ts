@@ -7,4 +7,3 @@ describe("web foundation", () => {
     expect(nextConfig.poweredByHeader).toBe(false);
   });
 });
-

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -6,6 +6,7 @@ import { createDatabase } from "../src/client.js";
 import { createEntityId } from "../src/ids.js";
 import { applyMigrations } from "../src/migrate.js";
 import {
+  authMemberships,
   incidents,
   items,
   outbox,
@@ -16,7 +17,8 @@ import {
 } from "../src/schema.js";
 import { withTenant } from "../src/tenant-context.js";
 
-const adminUrl = process.env.DATABASE_ADMIN_URL ?? "postgres://postgres:postgres@localhost:5432/zabuni";
+const adminUrl =
+  process.env.DATABASE_ADMIN_URL ?? "postgres://postgres:postgres@localhost:5432/zabuni";
 const appUrl = process.env.DATABASE_URL ?? "postgres://zabuni_app:zabuni_app@localhost:5432/zabuni";
 const migratorUrl =
   process.env.MIGRATION_DATABASE_URL ??
@@ -28,6 +30,10 @@ const app = createDatabase(appUrl, { maxConnections: 1 });
 const tenantA = createEntityId();
 const tenantB = createEntityId();
 const ids = {
+  identityA: createEntityId(),
+  identityB: createEntityId(),
+  membershipA: createEntityId(),
+  membershipB: createEntityId(),
   userA: createEntityId(),
   userB: createEntityId(),
   itemA: createEntityId(),
@@ -56,18 +62,25 @@ async function provisionRuntimeRole(): Promise<void> {
         CREATE ROLE zabuni_app LOGIN PASSWORD 'zabuni_app'
           NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
       END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zabuni_auth') THEN
+        CREATE ROLE zabuni_auth LOGIN PASSWORD 'zabuni_auth'
+          NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+      END IF;
     END
     $roles$;
     ALTER ROLE zabuni_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     ALTER ROLE zabuni_migrator LOGIN PASSWORD 'zabuni_migrator' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     ALTER ROLE zabuni_app LOGIN PASSWORD 'zabuni_app' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+    ALTER ROLE zabuni_auth LOGIN PASSWORD 'zabuni_auth' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
     GRANT zabuni_owner TO zabuni_migrator;
     REVOKE zabuni_owner, zabuni_migrator FROM zabuni_app;
-    GRANT CONNECT ON DATABASE zabuni TO zabuni_migrator, zabuni_app;
+    REVOKE zabuni_owner, zabuni_migrator, zabuni_app FROM zabuni_auth;
+    GRANT CONNECT ON DATABASE zabuni TO zabuni_migrator, zabuni_app, zabuni_auth;
     GRANT CREATE ON DATABASE zabuni TO zabuni_owner;
     GRANT USAGE, CREATE ON SCHEMA public TO zabuni_owner;
     GRANT USAGE ON SCHEMA public TO zabuni_migrator;
     GRANT USAGE ON SCHEMA public TO zabuni_app;
+    GRANT USAGE ON SCHEMA public TO zabuni_auth;
   `);
 }
 
@@ -85,6 +98,16 @@ beforeAll(async () => {
     INSERT INTO users (id, tenant_id, email, name, role)
     VALUES (${ids.userA}, ${tenantA}, 'a@example.test', 'A User', 'owner'),
            (${ids.userB}, ${tenantB}, 'b@example.test', 'B User', 'owner')
+  `;
+  await admin`
+    INSERT INTO auth_identity (id, name, email, email_verified)
+    VALUES (${ids.identityA}, 'A Identity', 'identity-a@example.test', true),
+           (${ids.identityB}, 'B Identity', 'identity-b@example.test', true)
+  `;
+  await admin`
+    INSERT INTO auth_membership (id, identity_id, tenant_id, user_id, role)
+    VALUES (${ids.membershipA}, ${ids.identityA}, ${tenantA}, ${ids.userA}, 'owner'),
+           (${ids.membershipB}, ${ids.identityB}, ${tenantB}, ${ids.userB}, 'owner')
   `;
   await admin`
     INSERT INTO items (id, tenant_id, sku, description, tax_class)
@@ -119,6 +142,9 @@ describe("tenant RLS through Drizzle", () => {
     await withTenant(app.db, tenantA, async (db) => {
       await expect(db.select({ id: tenants.id }).from(tenants)).resolves.toEqual([{ id: tenantA }]);
       await expect(db.select({ id: users.id }).from(users)).resolves.toEqual([{ id: ids.userA }]);
+      await expect(db.select({ id: authMemberships.id }).from(authMemberships)).resolves.toEqual([
+        { id: ids.membershipA }
+      ]);
       await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([{ id: ids.itemA }]);
       await expect(db.select({ id: usageEvents.id }).from(usageEvents)).resolves.toEqual([
         { id: ids.usageA }
@@ -137,6 +163,9 @@ describe("tenant RLS through Drizzle", () => {
     await withTenant(app.db, tenantB, async (db) => {
       const rows = await db.select().from(items);
       expect(rows.map(({ id }) => id)).toEqual([ids.itemB]);
+      await expect(db.select({ id: authMemberships.id }).from(authMemberships)).resolves.toEqual([
+        { id: ids.membershipB }
+      ]);
     });
   });
 
@@ -152,9 +181,7 @@ describe("tenant RLS through Drizzle", () => {
   it("clears context after rollback on a reused connection", async () => {
     await expect(
       withTenant(app.db, tenantA, async (db) => {
-        await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([
-          { id: ids.itemA }
-        ]);
+        await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([{ id: ids.itemA }]);
         throw new Error("force rollback");
       })
     ).rejects.toThrow("force rollback");
@@ -214,9 +241,41 @@ describe("tenant RLS through Drizzle", () => {
         costCurrency: "KES"
       })
     ).rejects.toMatchObject({ cause: { code: "42501" } });
-    await expect(withTenant(app.db, "not-a-tenant", () => Promise.resolve(undefined))).rejects.toThrow(
-      "verified UUIDv7"
-    );
+    await expect(
+      withTenant(app.db, "not-a-tenant", () => Promise.resolve(undefined))
+    ).rejects.toThrow("verified UUIDv7");
+  });
+
+  it("serializes first-tenant provisioning for one verified identity", async () => {
+    const concurrentApp = createDatabase(appUrl, { maxConnections: 2 });
+    const identityId = createEntityId();
+    await admin`
+      INSERT INTO auth_identity (id, name, email, email_verified)
+      VALUES (${identityId}, 'Concurrent Owner', 'concurrent@example.test', true)
+    `;
+    const provision = () =>
+      concurrentApp.db.execute(sql`
+        SELECT * FROM app.provision_tenant_owner(
+          ${identityId}::uuid,
+          ${createEntityId()}::uuid,
+          ${createEntityId()}::uuid,
+          ${createEntityId()}::uuid,
+          ${createEntityId()}::uuid,
+          'Concurrent Tenant'
+        )
+      `);
+
+    const outcomes = await Promise.allSettled([provision(), provision()]);
+    await concurrentApp.client.end();
+    expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter(({ status }) => status === "rejected")).toHaveLength(1);
+    const [counts] = await admin<{ audits: number; memberships: number; tenants: number }[]>`
+      SELECT
+        (SELECT count(*)::int FROM auth_membership WHERE identity_id = ${identityId}) AS memberships,
+        (SELECT count(*)::int FROM auth_onboarding_audit WHERE identity_id = ${identityId}) AS audits,
+        (SELECT count(*)::int FROM tenants WHERE legal_name = 'Concurrent Tenant') AS tenants
+    `;
+    expect(counts).toEqual({ audits: 1, memberships: 1, tenants: 1 });
   });
 
   it("proves policies and runtime role posture in Postgres metadata", async () => {
@@ -238,16 +297,19 @@ describe("tenant RLS through Drizzle", () => {
     >`
       SELECT relname, relrowsecurity, relforcerowsecurity
       FROM pg_class
-      WHERE relname IN ('tenants', 'users', 'items', 'usage_events', 'outbox', 'incidents')
+      WHERE relname = ANY(${registeredNames})
       ORDER BY relname
     `;
-    expect(tables).toHaveLength(6);
+    expect(tables).toHaveLength(registeredNames.length);
     expect(
-      tables.every(({ relrowsecurity, relforcerowsecurity }) => relrowsecurity && relforcerowsecurity)
+      tables.every(
+        ({ relrowsecurity, relforcerowsecurity }) => relrowsecurity && relforcerowsecurity
+      )
     ).toBe(true);
 
-    const [role] = await admin<
+    const roles = await admin<
       {
+        rolname: string;
         rolbypassrls: boolean;
         rolcreatedb: boolean;
         rolcreaterole: boolean;
@@ -255,16 +317,13 @@ describe("tenant RLS through Drizzle", () => {
         rolsuper: boolean;
       }[]
     >`
-      SELECT rolbypassrls, rolcreatedb, rolcreaterole, rolinherit, rolsuper
-      FROM pg_roles WHERE rolname = 'zabuni_app'
+      SELECT rolname, rolbypassrls, rolcreatedb, rolcreaterole, rolinherit, rolsuper
+      FROM pg_roles WHERE rolname IN ('zabuni_app', 'zabuni_auth') ORDER BY rolname
     `;
-    expect(role).toEqual({
-      rolbypassrls: false,
-      rolcreatedb: false,
-      rolcreaterole: false,
-      rolinherit: false,
-      rolsuper: false
-    });
+    expect(roles).toEqual([
+      expect.objectContaining({ rolname: "zabuni_app", rolbypassrls: false, rolsuper: false }),
+      expect.objectContaining({ rolname: "zabuni_auth", rolbypassrls: false, rolsuper: false })
+    ]);
 
     const policies = await admin<
       {
@@ -307,19 +366,39 @@ describe("tenant RLS through Drizzle", () => {
       WHERE grantee = 'zabuni_app' AND table_schema = 'public'
       ORDER BY table_name, privilege_type
     `;
-    expect(grants.filter(({ privilege }) => privilege === "DELETE" || privilege === "UPDATE")).toEqual([]);
+    expect(
+      grants.filter(({ privilege }) => privilege === "DELETE" || privilege === "UPDATE")
+    ).toEqual([]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
       { privilege: "INSERT", tableName: "outbox" },
       { privilege: "INSERT", tableName: "usage_events" }
     ]);
-    expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(registeredNames.length);
+    expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(
+      registeredNames.length
+    );
 
     const owners = await admin<{ owner: string }[]>`
       SELECT tableowner AS owner FROM pg_tables
       WHERE schemaname = 'public'
-        AND tablename IN ('tenants', 'users', 'items', 'usage_events', 'outbox', 'incidents')
+        AND tablename = ANY(${registeredNames})
     `;
-    expect(owners).toHaveLength(6);
+    expect(owners).toHaveLength(registeredNames.length);
     expect(owners.every(({ owner }) => owner === "zabuni_owner")).toBe(true);
+
+    const authGrants = await admin<{ privilege: string; tableName: string }[]>`
+      SELECT table_name AS "tableName", privilege_type AS privilege
+      FROM information_schema.role_table_grants
+      WHERE grantee = 'zabuni_auth' AND table_schema = 'public'
+      ORDER BY table_name, privilege_type
+    `;
+    expect(new Set(authGrants.map(({ tableName }) => tableName))).toEqual(
+      new Set([
+        "auth_account",
+        "auth_identity",
+        "auth_rate_limit",
+        "auth_session",
+        "auth_verification"
+      ])
+    );
   });
 });

@@ -9,4 +9,3 @@ describe("offline test policy", () => {
     );
   });
 });
-

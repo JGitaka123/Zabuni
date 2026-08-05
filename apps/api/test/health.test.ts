@@ -8,4 +8,3 @@ describe("health", () => {
     await expect(response.json()).resolves.toEqual({ status: "ok" });
   });
 });
-

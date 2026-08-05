@@ -12,7 +12,10 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@zabuni/auth": "workspace:*",
+    "@zabuni/db": "workspace:*",
     "@hono/node-server": "1.19.1",
+    "drizzle-orm": "0.44.5",
     "hono": "4.9.4"
   },
   "devDependencies": {

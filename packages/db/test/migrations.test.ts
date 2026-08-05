@@ -16,7 +16,8 @@ describe("forward-only migrations", () => {
       "0002_items.sql",
       "0003_usage_events.sql",
       "0004_outbox.sql",
-      "0005_rls.sql"
+      "0005_rls.sql",
+      "0006_auth.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });
