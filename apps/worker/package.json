@@ -7,8 +7,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run --passWithNoTests",
-    "test:coverage": "vitest run --coverage --passWithNoTests",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "dev": "tsx watch src/index.ts"
   },
   "devDependencies": {
@@ -18,4 +18,3 @@
     "vitest": "3.2.4"
   }
 }
-
