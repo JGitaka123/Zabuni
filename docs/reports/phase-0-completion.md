@@ -1,8 +1,11 @@
 # Phase 0 completion report
 
-**Repository:** `JGitaka123/Zabuni`  
-**Branch:** `codex/phase-0`  
-**Review date:** 2026-08-05  
+**Repository:** `JGitaka123/Zabuni`
+
+**Branch:** `codex/phase-0`
+
+**Review date:** 2026-08-05
+
 **Scope:** F-1 through F-7 only
 
 ## Executive assessment
