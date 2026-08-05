@@ -1,0 +1,19 @@
+{
+  "name": "@zabuni/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}
+

@@ -1,0 +1,26 @@
+{
+  "name": "@zabuni/web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests",
+    "dev": "next dev"
+  },
+  "dependencies": {
+    "next": "15.5.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}
+
