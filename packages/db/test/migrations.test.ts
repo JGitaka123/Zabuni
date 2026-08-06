@@ -22,7 +22,11 @@ describe("forward-only migrations", () => {
       "0008_observability.sql",
       "0009_outbox_claim_hardening.sql",
       "0010_catalog_imports.sql",
-      "0011_items_sku_casefold.sql"
+      "0011_items_sku_casefold.sql",
+      "0012_tax_classification_workflow.sql",
+      "0013_tax_classification_privileges.sql",
+      "0014_tax_evidence_enforcement.sql",
+      "0015_tax_evidence_preflight.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });

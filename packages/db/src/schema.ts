@@ -24,6 +24,14 @@ export type TaxClass = (typeof taxClasses)[number];
 export const catalogImportStatuses = ["staged", "committed", "failed"] as const;
 export type CatalogImportStatus = (typeof catalogImportStatuses)[number];
 
+export const taxClassificationSources = [
+  "manual_create",
+  "manual_change",
+  "import_file",
+  "import_human"
+] as const;
+export type TaxClassificationSource = (typeof taxClassificationSources)[number];
+
 export const usageMetrics = [
   "rfq_parsed",
   "quote_sent",
@@ -475,6 +483,75 @@ export const catalogImportRows = pgTable(
   ]
 );
 
+export const catalogTaxClassifications = pgTable(
+  "catalog_tax_classifications",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    itemId: uuid("item_id"),
+    importRowId: uuid("import_row_id"),
+    previousTaxClass: text("previous_tax_class").$type<TaxClass>(),
+    taxClass: text("tax_class").$type<TaxClass>().notNull(),
+    source: text("source").$type<TaxClassificationSource>().notNull(),
+    basisNote: text("basis_note").notNull(),
+    classifiedByUserId: uuid("classified_by_user_id").notNull(),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "catalog_tax_classifications_tenant_id_tenants_id_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tenantId, table.importRowId],
+      foreignColumns: [catalogImportRows.tenantId, catalogImportRows.id],
+      name: "catalog_tax_classifications_tenant_import_row_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [items.tenantId, items.id],
+      name: "catalog_tax_classifications_tenant_item_fk"
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.tenantId, table.classifiedByUserId],
+      foreignColumns: [users.tenantId, users.id],
+      name: "catalog_tax_classifications_tenant_user_fk"
+    }).onDelete("restrict"),
+    uniqueIndex("catalog_tax_classifications_tenant_id_id_unique").on(table.tenantId, table.id),
+    index("catalog_tax_classifications_tenant_row_created_idx")
+      .on(table.tenantId, table.importRowId, table.createdAt)
+      .where(sql`${table.importRowId} IS NOT NULL`),
+    index("catalog_tax_classifications_tenant_item_created_idx")
+      .on(table.tenantId, table.itemId, table.createdAt)
+      .where(sql`${table.itemId} IS NOT NULL`),
+    check(
+      "catalog_tax_classifications_tax_class_check",
+      sql`${table.taxClass} IN ('standard_16', 'zero_rated', 'exempt')`
+    ),
+    check(
+      "catalog_tax_classifications_previous_tax_class_check",
+      sql`${table.previousTaxClass} IS NULL OR ${table.previousTaxClass} IN ('standard_16', 'zero_rated', 'exempt')`
+    ),
+    check(
+      "catalog_tax_classifications_target_check",
+      sql`${table.itemId} IS NOT NULL OR ${table.importRowId} IS NOT NULL`
+    ),
+    check(
+      "catalog_tax_classifications_source_check",
+      sql`${table.source} IN ('manual_create', 'manual_change', 'import_file', 'import_human')`
+    ),
+    check(
+      "catalog_tax_classifications_source_target_check",
+      sql`(${table.source} IN ('manual_create', 'manual_change') AND ${table.itemId} IS NOT NULL AND ${table.importRowId} IS NULL) OR (${table.source} IN ('import_file', 'import_human') AND ${table.importRowId} IS NOT NULL)`
+    ),
+    check(
+      "catalog_tax_classifications_basis_note_check",
+      sql`btrim(${table.basisNote}) <> '' AND length(${table.basisNote}) <= 1000`
+    )
+  ]
+);
+
 export const usageEvents = pgTable(
   "usage_events",
   {
@@ -616,6 +693,7 @@ export const schema = {
   items,
   catalogImports,
   catalogImportRows,
+  catalogTaxClassifications,
   usageEvents,
   outbox,
   incidents
@@ -628,6 +706,11 @@ export const tenantTableRegistry = [
   { scopeColumn: "tenant_id", sqlName: "items", table: items },
   { scopeColumn: "tenant_id", sqlName: "catalog_imports", table: catalogImports },
   { scopeColumn: "tenant_id", sqlName: "catalog_import_rows", table: catalogImportRows },
+  {
+    scopeColumn: "tenant_id",
+    sqlName: "catalog_tax_classifications",
+    table: catalogTaxClassifications
+  },
   { scopeColumn: "tenant_id", sqlName: "usage_events", table: usageEvents },
   { scopeColumn: "tenant_id", sqlName: "outbox", table: outbox },
   { scopeColumn: "tenant_id", sqlName: "incidents", table: incidents }

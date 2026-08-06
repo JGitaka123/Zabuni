@@ -9,6 +9,7 @@ import {
   authMemberships,
   catalogImportRows,
   catalogImports,
+  catalogTaxClassifications,
   incidents,
   items,
   outbox,
@@ -40,10 +41,14 @@ const ids = {
   userB: createEntityId(),
   itemA: createEntityId(),
   itemB: createEntityId(),
+  itemTaxA: createEntityId(),
+  itemTaxB: createEntityId(),
   catalogImportA: createEntityId(),
   catalogImportB: createEntityId(),
   catalogImportRowA: createEntityId(),
   catalogImportRowB: createEntityId(),
+  taxClassificationA: createEntityId(),
+  taxClassificationB: createEntityId(),
   usageA: createEntityId(),
   usageB: createEntityId(),
   outboxA: createEntityId(),
@@ -128,11 +133,24 @@ beforeAll(async () => {
     VALUES (${ids.membershipA}, ${ids.identityA}, ${tenantA}, ${ids.userA}, 'owner'),
            (${ids.membershipB}, ${ids.identityB}, ${tenantB}, ${ids.userB}, 'owner')
   `;
-  await admin`
-    INSERT INTO items (id, tenant_id, sku, description, tax_class)
-    VALUES (${ids.itemA}, ${tenantA}, 'A-1', 'A item', 'standard_16'),
-           (${ids.itemB}, ${tenantB}, 'B-1', 'B item', 'zero_rated')
-  `;
+  await admin.begin(async (transaction) => {
+    await transaction`
+      INSERT INTO items (id, tenant_id, sku, description, tax_class)
+      VALUES (${ids.itemA}, ${tenantA}, 'A-1', 'A item', 'standard_16'),
+             (${ids.itemB}, ${tenantB}, 'B-1', 'B item', 'zero_rated')
+    `;
+    await transaction`
+      INSERT INTO catalog_tax_classifications (
+        id, tenant_id, item_id, tax_class, source, basis_note, classified_by_user_id
+      ) VALUES (
+        ${ids.itemTaxA}, ${tenantA}, ${ids.itemA}, 'standard_16',
+        'manual_create', 'Tenant A item fixture', ${ids.userA}
+      ), (
+        ${ids.itemTaxB}, ${tenantB}, ${ids.itemB}, 'zero_rated',
+        'manual_create', 'Tenant B item fixture', ${ids.userB}
+      )
+    `;
+  });
   await admin`
     INSERT INTO catalog_imports (id, tenant_id, source_filename, total_rows, invalid_rows)
     VALUES (${ids.catalogImportA}, ${tenantA}, 'tenant-a.csv', 1, 1),
@@ -150,6 +168,17 @@ beforeAll(async () => {
     ), (
       ${ids.catalogImportRowB}, ${tenantB}, ${ids.catalogImportB}, 1,
       '{"SKU":"B-STAGED"}'::jsonb, 'B-STAGED', 'Ready', 'exempt', '[]'::jsonb
+    )
+  `;
+  await admin`
+    INSERT INTO catalog_tax_classifications (
+      id, tenant_id, import_row_id, tax_class, source, basis_note, classified_by_user_id
+    ) VALUES (
+      ${ids.taxClassificationA}, ${tenantA}, ${ids.catalogImportRowA}, 'standard_16',
+      'import_human', 'Tenant A fixture decision', ${ids.userA}
+    ), (
+      ${ids.taxClassificationB}, ${tenantB}, ${ids.catalogImportRowB}, 'exempt',
+      'import_file', 'Tenant B fixture source', ${ids.userB}
     )
   `;
   await admin`
@@ -191,6 +220,11 @@ describe("tenant RLS through Drizzle", () => {
       await expect(
         db.select({ id: catalogImportRows.id }).from(catalogImportRows)
       ).resolves.toEqual([{ id: ids.catalogImportRowA }]);
+      await expect(
+        db.select({ id: catalogTaxClassifications.id }).from(catalogTaxClassifications)
+      ).resolves.toEqual(
+        expect.arrayContaining([{ id: ids.itemTaxA }, { id: ids.taxClassificationA }])
+      );
       await expect(db.select({ id: usageEvents.id }).from(usageEvents)).resolves.toEqual([
         { id: ids.usageA }
       ]);
@@ -217,6 +251,11 @@ describe("tenant RLS through Drizzle", () => {
       await expect(
         db.select({ id: catalogImportRows.id }).from(catalogImportRows)
       ).resolves.toEqual([{ id: ids.catalogImportRowB }]);
+      await expect(
+        db.select({ id: catalogTaxClassifications.id }).from(catalogTaxClassifications)
+      ).resolves.toEqual(
+        expect.arrayContaining([{ id: ids.itemTaxB }, { id: ids.taxClassificationB }])
+      );
     });
   });
 
@@ -287,6 +326,12 @@ describe("tenant RLS through Drizzle", () => {
         description: "Safe item",
         taxClass: "exempt"
       });
+      await db.execute(sql`
+        SELECT app.record_tax_classification(
+          ${createEntityId()}::uuid, ${itemId}::uuid, NULL::uuid, 'exempt',
+          'manual_create', 'Safe item fixture evidence', ${ids.userA}::uuid
+        )
+      `);
       await db.update(items).set({ active: false }).where(eq(items.id, itemId));
       const [archived] = await db.select().from(items).where(eq(items.id, itemId));
       expect(archived?.active).toBe(false);
@@ -296,7 +341,10 @@ describe("tenant RLS through Drizzle", () => {
     ).rejects.toMatchObject({
       cause: { code: "42501" }
     });
-    await admin`DELETE FROM items WHERE id = ${itemId}`;
+    await admin.begin(async (transaction) => {
+      await transaction`DELETE FROM catalog_tax_classifications WHERE item_id = ${itemId}`;
+      await transaction`DELETE FROM items WHERE id = ${itemId}`;
+    });
   });
 
   it("preserves committed import audit history", async () => {
@@ -318,8 +366,15 @@ describe("tenant RLS through Drizzle", () => {
         rawData: { SKU: "AUDIT-1" },
         sku: "AUDIT-1",
         description: "Audit row",
-        taxClass: "standard_16"
+        taxClass: "standard_16",
+        active: true
       });
+      await db.execute(sql`
+        SELECT app.record_tax_classification(
+          ${createEntityId()}::uuid, NULL::uuid, ${rowId}::uuid, 'standard_16',
+          'import_file', 'Audit row fixture evidence', ${ids.userA}::uuid
+        )
+      `);
       await db
         .update(catalogImports)
         .set({ status: "committed", committedAt: new Date() })
@@ -331,14 +386,15 @@ describe("tenant RLS through Drizzle", () => {
           .where(eq(catalogImports.id, importId))
           .returning({ id: catalogImports.id })
       ).resolves.toEqual([]);
-      await expect(
+    });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
         db
           .update(catalogImportRows)
           .set({ sku: "TAMPERED" })
           .where(eq(catalogImportRows.id, rowId))
-          .returning({ id: catalogImportRows.id })
-      ).resolves.toEqual([]);
-    });
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
     await expect(
       withTenant(app.db, tenantA, (db) =>
         db.delete(catalogImportRows).where(eq(catalogImportRows.id, rowId))
@@ -352,6 +408,72 @@ describe("tenant RLS through Drizzle", () => {
           .returning({ id: catalogImports.id })
       )
     ).resolves.toEqual([]);
+  });
+
+  it("keeps tax classification evidence append-only", async () => {
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .update(catalogTaxClassifications)
+          .set({ basisNote: "tampered" })
+          .where(eq(catalogTaxClassifications.id, ids.taxClassificationA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .delete(catalogTaxClassifications)
+          .where(eq(catalogTaxClassifications.id, ids.taxClassificationA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+  });
+
+  it("rejects item creation without classification evidence and direct tax mutation", async () => {
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(items).values({
+          id: createEntityId(),
+          tenantId: tenantA,
+          sku: `NO-EVIDENCE-${createEntityId()}`,
+          description: "Unaudited item",
+          taxClass: "exempt"
+        })
+      )
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.update(items).set({ taxClass: "exempt" }).where(eq(items.id, ids.itemA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+  });
+
+  it("enforces classified rows before an import can become committed", async () => {
+    const importId = createEntityId();
+    await expect(
+      withTenant(app.db, tenantA, async (db) => {
+        await db.insert(catalogImports).values({
+          id: importId,
+          tenantId: tenantA,
+          sourceFilename: "unclassified.csv",
+          totalRows: 1,
+          validRows: 1
+        });
+        await db.insert(catalogImportRows).values({
+          id: createEntityId(),
+          tenantId: tenantA,
+          importId,
+          rowNumber: 1,
+          rawData: { SKU: "UNCLASSIFIED" },
+          sku: "UNCLASSIFIED",
+          description: "Unclassified fixture",
+          active: true
+        });
+        return db
+          .update(catalogImports)
+          .set({ status: "committed", committedAt: new Date() })
+          .where(eq(catalogImports.id, importId));
+      })
+    ).rejects.toMatchObject({ cause: { code: "23514" } });
   });
 
   it("rejects cross-tenant parent references", async () => {
@@ -521,7 +643,6 @@ describe("tenant RLS through Drizzle", () => {
       { privilege: "DELETE", tableName: "catalog_imports" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "UPDATE")).toEqual([
-      { privilege: "UPDATE", tableName: "catalog_import_rows" },
       { privilege: "UPDATE", tableName: "catalog_imports" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
@@ -544,6 +665,7 @@ describe("tenant RLS through Drizzle", () => {
     expect(itemColumnGrants.some(({ privilege }) => privilege === "UPDATE")).toBe(true);
     expect(itemColumnGrants).not.toContainEqual({ columnName: "tenant_id", privilege: "UPDATE" });
     expect(itemColumnGrants).not.toContainEqual({ columnName: "id", privilege: "UPDATE" });
+    expect(itemColumnGrants).not.toContainEqual({ columnName: "tax_class", privilege: "UPDATE" });
     expect(itemColumnGrants.some(({ privilege }) => privilege === "DELETE")).toBe(false);
 
     const owners = await admin<{ owner: string }[]>`

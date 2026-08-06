@@ -9,7 +9,8 @@ import {
   TenantCatalogService,
   validateCatalogInput,
   type CatalogInput,
-  type ColumnMapping
+  type ColumnMapping,
+  type TaxClass
 } from "@zabuni/catalog";
 import type { AuthServer, MembershipRuntime } from "@zabuni/auth";
 import type { TenantRole, TenantRuntime } from "@zabuni/db";
@@ -20,6 +21,7 @@ import { requireTenantSession, type SessionVariables } from "./middleware/sessio
 
 const MAX_CATALOG_FILE_BYTES = 10 * 1024 * 1024;
 const catalogFieldSet = new Set<string>(catalogFields);
+const taxClassSet = new Set<TaxClass>(["standard_16", "zero_rated", "exempt"]);
 
 interface CatalogDependencies {
   readonly auth: AuthServer;
@@ -54,9 +56,26 @@ function validationResponse(error: unknown): { readonly error: string; readonly 
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  if (Reflect.get(error, "code") === "23505") return true;
-  return isUniqueViolation(Reflect.get(error, "cause"));
+  return hasErrorCode(error, "23505");
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  let current = error;
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (typeof current !== "object" || current === null) return false;
+    if (Reflect.get(current, "code") === code) return true;
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
+
+function isValidClassificationBasis(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim() === "" || value.length > 1_000) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 32 || code === 127) return false;
+  }
+  return true;
 }
 
 async function parseUploadedCatalog(upload: File) {
@@ -89,19 +108,35 @@ export function registerCatalogRoutes(
     const session = context.get("tenantSession");
     if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
     let input: CatalogInput;
+    let taxClassificationBasis: string;
     try {
-      input = validateCatalogInput(await context.req.json());
+      const body: unknown = await context.req.json();
+      input = validateCatalogInput(body);
+      const basis =
+        typeof body === "object" && body !== null && "taxClassificationBasis" in body
+          ? body.taxClassificationBasis
+          : undefined;
+      if (!isValidClassificationBasis(basis)) {
+        return context.json({ error: "tax_classification_basis_required" }, 400);
+      }
+      taxClassificationBasis = basis;
     } catch (error) {
       return context.json(validationResponse(error), 400);
     }
     try {
       const created = await dependencies.tenants.run(session.tenantId, async (database) => {
         const catalog = new TenantCatalogService(database, session.tenantId);
-        return catalog.create(input);
+        return catalog.create(input, {
+          classifiedByUserId: session.userId,
+          basisNote: taxClassificationBasis
+        });
       });
       return context.json({ item: serializeCatalogItem(created) }, 201);
     } catch (error) {
       if (isUniqueViolation(error)) return context.json({ error: "catalog_sku_conflict" }, 409);
+      if (hasErrorCode(error, "23514")) {
+        return context.json({ error: "catalog_tax_classification_conflict" }, 409);
+      }
       throw error;
     }
   });
@@ -113,20 +148,36 @@ export function registerCatalogRoutes(
       return context.json({ error: "catalog_item_id_invalid" }, 400);
     }
     let input: CatalogInput;
+    let taxClassificationBasis: string;
     try {
-      input = validateCatalogInput(await context.req.json());
+      const body: unknown = await context.req.json();
+      input = validateCatalogInput(body);
+      const basis =
+        typeof body === "object" && body !== null && "taxClassificationBasis" in body
+          ? body.taxClassificationBasis
+          : undefined;
+      if (!isValidClassificationBasis(basis)) {
+        return context.json({ error: "tax_classification_basis_required" }, 400);
+      }
+      taxClassificationBasis = basis;
     } catch (error) {
       return context.json(validationResponse(error), 400);
     }
     try {
       const updated = await dependencies.tenants.run(session.tenantId, async (database) => {
         const catalog = new TenantCatalogService(database, session.tenantId);
-        return catalog.update(context.req.param("itemId"), input);
+        return catalog.update(context.req.param("itemId"), input, {
+          classifiedByUserId: session.userId,
+          basisNote: taxClassificationBasis
+        });
       });
       if (updated === undefined) return context.json({ error: "catalog_item_not_found" }, 404);
       return context.json({ item: serializeCatalogItem(updated) });
     } catch (error) {
       if (isUniqueViolation(error)) return context.json({ error: "catalog_sku_conflict" }, 409);
+      if (hasErrorCode(error, "23514")) {
+        return context.json({ error: "catalog_tax_classification_conflict" }, 409);
+      }
       throw error;
     }
   });
@@ -143,6 +194,50 @@ export function registerCatalogRoutes(
     });
     if (!archived) return context.json({ error: "catalog_item_not_found" }, 404);
     return context.json({ archived: true });
+  });
+
+  app.put("/catalog/items/:itemId/tax-class", tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
+    const itemId = context.req.param("itemId");
+    if (!isUuidV7(itemId)) return context.json({ error: "catalog_item_id_invalid" }, 400);
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "catalog_classification_invalid" }, 400);
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return context.json({ error: "catalog_classification_invalid" }, 400);
+    }
+    const taxClass: unknown = "taxClass" in body ? body.taxClass : undefined;
+    const basisNote: unknown = "basisNote" in body ? body.basisNote : undefined;
+    if (
+      typeof taxClass !== "string" ||
+      !taxClassSet.has(taxClass as TaxClass) ||
+      !isValidClassificationBasis(basisNote)
+    ) {
+      return context.json({ error: "catalog_classification_invalid" }, 400);
+    }
+    try {
+      const updated = await dependencies.tenants.run(session.tenantId, async (database) => {
+        const catalog = new TenantCatalogService(database, session.tenantId);
+        return catalog.reclassifyItem(itemId, taxClass as TaxClass, {
+          classifiedByUserId: session.userId,
+          basisNote
+        });
+      });
+      if (updated === undefined) return context.json({ error: "catalog_item_not_found" }, 404);
+      return context.json({ item: serializeCatalogItem(updated) });
+    } catch (error) {
+      if (
+        hasErrorCode(error, "23514") ||
+        (error instanceof Error && error.message.includes("unchanged"))
+      ) {
+        return context.json({ error: "catalog_tax_classification_conflict" }, 409);
+      }
+      throw error;
+    }
   });
 
   app.post("/catalog/imports/preview", tenantSession, async (context) => {
@@ -229,4 +324,61 @@ export function registerCatalogRoutes(
       throw error;
     }
   });
+
+  app.put(
+    "/catalog/imports/:importId/rows/:rowNumber/tax-class",
+    tenantSession,
+    async (context) => {
+      const session = context.get("tenantSession");
+      if (!mayWriteCatalog(session.role)) {
+        return context.json({ error: "catalog_write_denied" }, 403);
+      }
+      const importId = context.req.param("importId");
+      const rowNumber = Number(context.req.param("rowNumber"));
+      if (!isUuidV7(importId) || !Number.isSafeInteger(rowNumber) || rowNumber <= 0) {
+        return context.json({ error: "catalog_classification_target_invalid" }, 400);
+      }
+      let body: unknown;
+      try {
+        body = await context.req.json();
+      } catch {
+        return context.json({ error: "catalog_classification_invalid" }, 400);
+      }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return context.json({ error: "catalog_classification_invalid" }, 400);
+      }
+      const taxClass: unknown = "taxClass" in body ? body.taxClass : undefined;
+      const basisNote: unknown = "basisNote" in body ? body.basisNote : undefined;
+      if (
+        typeof taxClass !== "string" ||
+        !taxClassSet.has(taxClass as TaxClass) ||
+        !isValidClassificationBasis(basisNote)
+      ) {
+        return context.json({ error: "catalog_classification_invalid" }, 400);
+      }
+      try {
+        const row = await dependencies.tenants.run(session.tenantId, async (database) => {
+          const catalog = new TenantCatalogService(database, session.tenantId);
+          return catalog.classifyStagedRow({
+            importId,
+            rowNumber,
+            taxClass: taxClass as TaxClass,
+            classifiedByUserId: session.userId,
+            basisNote
+          });
+        });
+        return context.json({
+          row: { rowNumber: row.rowNumber, sku: row.sku, taxClass: row.taxClass }
+        });
+      } catch (error) {
+        if (hasErrorCode(error, "P0002")) {
+          return context.json({ error: "catalog_classification_target_not_found" }, 404);
+        }
+        if (hasErrorCode(error, "23514")) {
+          return context.json({ error: "catalog_classification_conflict" }, 409);
+        }
+        throw error;
+      }
+    }
+  );
 }

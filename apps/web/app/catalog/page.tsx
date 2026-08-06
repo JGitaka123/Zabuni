@@ -78,6 +78,7 @@ export default function CatalogPage() {
   const [sku, setSku] = useState("");
   const [description, setDescription] = useState("");
   const [taxClass, setTaxClass] = useState<TaxClass | "">("");
+  const [taxClassificationBasis, setTaxClassificationBasis] = useState("");
   const [costMinor, setCostMinor] = useState("");
   const [costCurrency, setCostCurrency] = useState("KES");
   const [file, setFile] = useState<File>();
@@ -86,6 +87,10 @@ export default function CatalogPage() {
   const [importId, setImportId] = useState<string>();
   const [counts, setCounts] = useState<ImportCounts>();
   const [problemRows, setProblemRows] = useState<readonly ImportProblemRow[]>([]);
+  const [classificationChoices, setClassificationChoices] = useState<Record<number, TaxClass>>({});
+  const [classificationNotes, setClassificationNotes] = useState<Record<number, string>>({});
+  const [itemTaxChoices, setItemTaxChoices] = useState<Record<string, TaxClass>>({});
+  const [itemTaxNotes, setItemTaxNotes] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
 
   async function loadItems() {
@@ -111,6 +116,7 @@ export default function CatalogPage() {
       sku,
       description,
       taxClass,
+      taxClassificationBasis,
       active: true,
       ...(costMinor === "" ? {} : { costMinor, costCurrency })
     };
@@ -126,6 +132,7 @@ export default function CatalogPage() {
     setSku("");
     setDescription("");
     setTaxClass("");
+    setTaxClassificationBasis("");
     setCostMinor("");
     setMessage("Item created.");
     await loadItems();
@@ -135,6 +142,26 @@ export default function CatalogPage() {
     const { response, body } = await apiJson(`/catalog/items/${itemId}`, { method: "DELETE" });
     setMessage(response.ok ? "Item archived." : errorLabel(body));
     if (response.ok) await loadItems();
+  }
+
+  async function reclassifyItem(item: CatalogItem) {
+    const selected = itemTaxChoices[item.id];
+    const basis = itemTaxNotes[item.id]?.trim() ?? "";
+    if (selected === undefined || selected === item.taxClass || basis === "") {
+      setMessage("Choose a different tax class and record the reclassification basis.");
+      return;
+    }
+    const { response, body } = await apiJson(`/catalog/items/${item.id}/tax-class`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taxClass: selected, basisNote: basis })
+    });
+    if (!response.ok) {
+      setMessage(errorLabel(body));
+      return;
+    }
+    setMessage(`Tax class changed for ${item.sku}; the prior class remains in the audit history.`);
+    await loadItems();
   }
 
   async function inspectFile() {
@@ -158,6 +185,8 @@ export default function CatalogPage() {
     setMapping({});
     setCounts(undefined);
     setProblemRows([]);
+    setClassificationChoices({});
+    setClassificationNotes({});
     setImportId(undefined);
     setMessage("Choose the source column for each catalog field.");
   }
@@ -206,6 +235,35 @@ export default function CatalogPage() {
     setMessage("Catalog import committed.");
     setImportId(undefined);
     await loadItems();
+  }
+
+  async function classifyRow(rowNumber: number) {
+    if (importId === undefined) return;
+    const selected = classificationChoices[rowNumber];
+    const basisNote = classificationNotes[rowNumber]?.trim() ?? "";
+    if (selected === undefined || basisNote === "") {
+      setMessage("Choose a tax class and record the classification basis.");
+      return;
+    }
+    const { response, body } = await apiJson(
+      `/catalog/imports/${importId}/rows/${String(rowNumber)}/tax-class`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taxClass: selected, basisNote })
+      }
+    );
+    if (!response.ok) {
+      setMessage(errorLabel(body));
+      return;
+    }
+    setProblemRows((current) => current.filter((row) => row.rowNumber !== rowNumber));
+    setCounts((current) =>
+      current === undefined
+        ? undefined
+        : { ...current, valid: current.valid + 1, staged: current.staged - 1 }
+    );
+    setMessage(`Row ${String(rowNumber)} classified. No tax class was inferred.`);
   }
 
   function mappingSelect(field: string, label: string, required = false) {
@@ -284,6 +342,18 @@ export default function CatalogPage() {
               </select>
             </label>
             <label>
+              Classification basis
+              <input
+                required
+                maxLength={1000}
+                placeholder="Record the supplier, KRA, or reviewed source"
+                value={taxClassificationBasis}
+                onChange={(event) => {
+                  setTaxClassificationBasis(event.target.value);
+                }}
+              />
+            </label>
+            <label>
               Cost in minor units (optional)
               <input
                 inputMode="numeric"
@@ -358,6 +428,9 @@ export default function CatalogPage() {
                     <th>SKU</th>
                     <th>Field</th>
                     <th>Issue</th>
+                    <th>Explicit class</th>
+                    <th>Classification basis</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -368,6 +441,61 @@ export default function CatalogPage() {
                         <td>{row.source[mapping.sku ?? ""] ?? "—"}</td>
                         <td>{issue.field ?? "row"}</td>
                         <td>{issue.message}</td>
+                        <td>
+                          {row.kind === "staged" ? (
+                            <select
+                              aria-label={`Tax class for row ${String(row.rowNumber)}`}
+                              value={classificationChoices[row.rowNumber] ?? ""}
+                              onChange={(event) => {
+                                if (event.target.value !== "") {
+                                  setClassificationChoices((current) => ({
+                                    ...current,
+                                    [row.rowNumber]: event.target.value as TaxClass
+                                  }));
+                                }
+                              }}
+                            >
+                              <option value="">Choose explicitly</option>
+                              <option value="standard_16">Standard 16%</option>
+                              <option value="zero_rated">Zero-rated</option>
+                              <option value="exempt">Exempt</option>
+                            </select>
+                          ) : (
+                            "Fix source file"
+                          )}
+                        </td>
+                        <td>
+                          {row.kind === "staged" ? (
+                            <input
+                              aria-label={`Classification basis for row ${String(row.rowNumber)}`}
+                              maxLength={1000}
+                              placeholder="e.g. reviewed supplier/KRA record"
+                              value={classificationNotes[row.rowNumber] ?? ""}
+                              onChange={(event) => {
+                                setClassificationNotes((current) => ({
+                                  ...current,
+                                  [row.rowNumber]: event.target.value
+                                }));
+                              }}
+                            />
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          {row.kind === "staged" ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void classifyRow(row.rowNumber);
+                              }}
+                            >
+                              Confirm class
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
                       </tr>
                     ))
                   )}
@@ -411,6 +539,44 @@ export default function CatalogPage() {
                 </td>
                 <td>{item.active ? "Active" : "Archived"}</td>
                 <td>
+                  <select
+                    aria-label={`New tax class for ${item.sku}`}
+                    value={itemTaxChoices[item.id] ?? ""}
+                    onChange={(event) => {
+                      if (event.target.value !== "") {
+                        setItemTaxChoices((current) => ({
+                          ...current,
+                          [item.id]: event.target.value as TaxClass
+                        }));
+                      }
+                    }}
+                  >
+                    <option value="">Reclassify…</option>
+                    <option value="standard_16">Standard 16%</option>
+                    <option value="zero_rated">Zero-rated</option>
+                    <option value="exempt">Exempt</option>
+                  </select>
+                  <input
+                    aria-label={`Reclassification basis for ${item.sku}`}
+                    maxLength={1000}
+                    placeholder="Required basis"
+                    value={itemTaxNotes[item.id] ?? ""}
+                    onChange={(event) => {
+                      setItemTaxNotes((current) => ({
+                        ...current,
+                        [item.id]: event.target.value
+                      }));
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!item.active}
+                    onClick={() => {
+                      void reclassifyItem(item);
+                    }}
+                  >
+                    Change tax class
+                  </button>
                   <button
                     type="button"
                     disabled={!item.active}

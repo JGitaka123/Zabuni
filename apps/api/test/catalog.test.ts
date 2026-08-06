@@ -99,6 +99,7 @@ describe("catalog HTTP boundary", () => {
         sku: "DUP-1",
         description: "Duplicate fixture",
         taxClass: "exempt",
+        taxClassificationBasis: "Reviewed fixture source",
         active: true
       })
     });
@@ -111,6 +112,71 @@ describe("catalog HTTP boundary", () => {
     const response = await app.request("/catalog/items/not-a-uuid", { method: "DELETE" });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "catalog_item_id_invalid" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("keeps tax classification authority limited to owner and manager", async () => {
+    const { app, run } = dependencies("finance");
+    const response = await app.request(
+      `/catalog/imports/${tenantId}/rows/2/tax-class`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          taxClass: "exempt",
+          basisNote: "Finance role must not be able to make this decision"
+        })
+      }
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_write_denied" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("requires an exact tax class and nonblank classification basis", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request(
+      `/catalog/imports/${tenantId}/rows/2/tax-class`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taxClass: "16%", basisNote: "" })
+      }
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_classification_invalid" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("maps wrapped stale classification decisions to a conflict", async () => {
+    const { app, run } = dependencies("manager");
+    run.mockRejectedValueOnce(new Error("classification failed", { cause: { code: "23514" } }));
+    const response = await app.request(
+      `/catalog/imports/${tenantId}/rows/2/tax-class`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          taxClass: "exempt",
+          basisNote: "Reviewed fixture evidence"
+        })
+      }
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_classification_conflict" });
+  });
+
+  it("rejects malformed classification JSON without database access", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request(
+      `/catalog/imports/${tenantId}/rows/2/tax-class`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: "{"
+      }
+    );
+    expect(response.status).toBe(400);
     expect(run).not.toHaveBeenCalled();
   });
 });

@@ -1,17 +1,29 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   catalogImportRows,
   catalogImports,
+  catalogTaxClassifications,
   createEntityId,
   isUuidV7,
   items,
+  type TaxClass,
   type TenantDatabase
 } from "@zabuni/db";
+import {
+  classifyCatalogImportRow,
+  reclassifyCatalogItem,
+  recordTaxClassification
+} from "@zabuni/db/privileged/catalog-tax";
 
 import type { CatalogInput, ImportPreview } from "./types.js";
 
 export type CatalogItem = typeof items.$inferSelect;
 export type CatalogImport = typeof catalogImports.$inferSelect;
+export type CatalogImportRow = typeof catalogImportRows.$inferSelect;
+export interface TaxClassificationDecision {
+  readonly classifiedByUserId: string;
+  readonly basisNote: string;
+}
 export type SerializedCatalogItem = Omit<CatalogItem, "costMinor" | "createdAt"> & {
   readonly costMinor: string | null;
   readonly createdAt: string;
@@ -51,6 +63,36 @@ function persistenceValues(input: CatalogInput) {
   };
 }
 
+function mutableNonTaxValues(input: CatalogInput) {
+  const values = persistenceValues(input);
+  return {
+    sku: values.sku,
+    description: values.description,
+    brand: values.brand,
+    packSize: values.packSize,
+    uom: values.uom,
+    costMinor: values.costMinor,
+    costCurrency: values.costCurrency,
+    fxBufferBps: values.fxBufferBps,
+    kraItemCode: values.kraItemCode,
+    hsCode: values.hsCode,
+    leadTimeDays: values.leadTimeDays,
+    minMarginBps: values.minMarginBps,
+    active: values.active
+  };
+}
+
+function validatedDecision(decision: TaxClassificationDecision): TaxClassificationDecision {
+  if (!isUuidV7(decision.classifiedByUserId)) {
+    throw new Error("Tax classification user must be a verified UUIDv7");
+  }
+  const basisNote = decision.basisNote.trim();
+  if (basisNote === "" || basisNote.length > 1_000 || hasControlCharacter(basisNote)) {
+    throw new Error("Tax classification basis note must contain 1 to 1000 safe characters");
+  }
+  return { classifiedByUserId: decision.classifiedByUserId, basisNote };
+}
+
 /**
  * Catalog persistence bound to an already tenant-scoped transaction. Every
  * statement also includes the tenant key so neither RLS nor application
@@ -83,19 +125,60 @@ export class TenantCatalogService {
     return item;
   }
 
-  async create(input: CatalogInput): Promise<CatalogItem> {
+  async create(
+    input: CatalogInput,
+    classification: TaxClassificationDecision
+  ): Promise<CatalogItem> {
+    const decision = validatedDecision(classification);
     const [created] = await this.#database
       .insert(items)
       .values({ id: createEntityId(), tenantId: this.#tenantId, ...persistenceValues(input) })
       .returning();
     if (created === undefined) throw new Error("Catalog item insert returned no row");
+    await recordTaxClassification(this.#database, {
+      eventId: createEntityId(),
+      itemId: created.id,
+      taxClass: created.taxClass,
+      source: "manual_create",
+      basisNote: decision.basisNote,
+      userId: decision.classifiedByUserId
+    });
     return created;
   }
 
-  async update(itemId: string, input: CatalogInput): Promise<CatalogItem | undefined> {
+  async update(
+    itemId: string,
+    input: CatalogInput,
+    classification?: TaxClassificationDecision
+  ): Promise<CatalogItem | undefined> {
+    const [existing] = await this.#database
+      .select()
+      .from(items)
+      .where(and(eq(items.tenantId, this.#tenantId), eq(items.id, itemId)))
+      .for("update")
+      .limit(1);
+    if (existing === undefined) return undefined;
+    const taxChanged = existing.taxClass !== input.taxClass;
+    const decision = taxChanged
+      ? validatedDecision(
+          classification ?? {
+            classifiedByUserId: "",
+            basisNote: ""
+          }
+        )
+      : undefined;
+    if (taxChanged && decision !== undefined) {
+      await reclassifyCatalogItem(this.#database, {
+        eventId: createEntityId(),
+        itemId,
+        taxClass: input.taxClass,
+        basisNote: decision.basisNote,
+        userId: decision.classifiedByUserId
+      });
+    }
     const [updated] = await this.#database
       .update(items)
-      .set(persistenceValues(input))
+      .set(mutableNonTaxValues(input))
       .where(and(eq(items.tenantId, this.#tenantId), eq(items.id, itemId)))
       .returning();
     return updated;
@@ -110,28 +193,31 @@ export class TenantCatalogService {
     return archived.length === 1;
   }
 
-  async importValidated(preview: ImportPreview): Promise<readonly CatalogItem[]> {
-    if (preview.stagedCount > 0 || preview.rejectedCount > 0) {
-      throw new Error("Catalog import contains staged or rejected rows");
+  async reclassifyItem(
+    itemId: string,
+    taxClass: TaxClass,
+    classification: TaxClassificationDecision
+  ): Promise<CatalogItem | undefined> {
+    const decision = validatedDecision(classification);
+    const existing = await this.get(itemId);
+    if (existing === undefined) return undefined;
+    if (existing.taxClass === taxClass) {
+      throw new Error("Catalog item tax class is unchanged");
     }
-    const rows = preview.rows.filter((row) => row.kind === "valid");
-    if (rows.length === 0) return [];
-    return this.#database
-      .insert(items)
-      .values(
-        rows.map((row) => ({
-          id: createEntityId(),
-          tenantId: this.#tenantId,
-          ...persistenceValues(row.value)
-        }))
-      )
-      .returning();
+    await reclassifyCatalogItem(this.#database, {
+      eventId: createEntityId(),
+      itemId,
+      taxClass,
+      basisNote: decision.basisNote,
+      userId: decision.classifiedByUserId
+    });
+    return this.get(itemId);
   }
 
   async stageImport(
     sourceFilename: string,
     preview: ImportPreview,
-    createdByUserId?: string
+    createdByUserId: string
   ): Promise<CatalogImport> {
     if (
       sourceFilename.trim() === "" ||
@@ -140,7 +226,7 @@ export class TenantCatalogService {
     ) {
       throw new Error("Catalog import filename is invalid");
     }
-    if (createdByUserId !== undefined && !isUuidV7(createdByUserId)) {
+    if (!isUuidV7(createdByUserId)) {
       throw new Error("Catalog import user must be a verified UUIDv7");
     }
     const importId = createEntityId();
@@ -159,14 +245,13 @@ export class TenantCatalogService {
         totalRows: preview.rows.length,
         validRows: preview.validCount,
         invalidRows,
-        ...(createdByUserId === undefined ? {} : { createdByUserId })
+        createdByUserId
       })
       .returning();
     if (catalogImport === undefined) throw new Error("Catalog import insert returned no row");
 
     if (preview.rows.length > 0) {
-      await this.#database.insert(catalogImportRows).values(
-        preview.rows.map((row) => {
+      const stagedValues = preview.rows.map((row) => {
           const validationErrors =
             row.kind === "valid"
               ? []
@@ -194,10 +279,69 @@ export class TenantCatalogService {
             active: value?.active ?? null,
             validationErrors
           };
-        })
+        });
+      await this.#database.insert(catalogImportRows).values(stagedValues);
+      const fileClassifications = stagedValues.filter(
+        (row): row is typeof row & { taxClass: TaxClass } => row.taxClass !== null
       );
+      if (fileClassifications.length > 0) {
+        for (const row of fileClassifications) {
+          await recordTaxClassification(this.#database, {
+            eventId: createEntityId(),
+            importRowId: row.id,
+            taxClass: row.taxClass,
+            source: "import_file",
+            basisNote: `Explicit value from mapped tax column in ${sourceFilename.trim()}`,
+            userId: createdByUserId
+          });
+        }
+      }
     }
     return catalogImport;
+  }
+
+  async classifyStagedRow(input: {
+    readonly importId: string;
+    readonly rowNumber: number;
+    readonly taxClass: TaxClass;
+    readonly classifiedByUserId: string;
+    readonly basisNote: string;
+  }): Promise<CatalogImportRow> {
+    if (!isUuidV7(input.importId) || !isUuidV7(input.classifiedByUserId)) {
+      throw new Error("Tax classification identifiers must be verified UUIDv7 values");
+    }
+    const decision = validatedDecision({
+      classifiedByUserId: input.classifiedByUserId,
+      basisNote: input.basisNote
+    });
+    if (!Number.isSafeInteger(input.rowNumber) || input.rowNumber <= 0) {
+      throw new Error("Catalog import row number is invalid");
+    }
+    if (!(["standard_16", "zero_rated", "exempt"] as const).includes(input.taxClass)) {
+      throw new Error("Tax classification is invalid");
+    }
+
+    await classifyCatalogImportRow(this.#database, {
+      eventId: createEntityId(),
+      importId: input.importId,
+      rowNumber: input.rowNumber,
+      taxClass: input.taxClass,
+      basisNote: decision.basisNote,
+      userId: decision.classifiedByUserId
+    });
+    const [updated] = await this.#database
+      .select()
+      .from(catalogImportRows)
+      .where(
+        and(
+          eq(catalogImportRows.tenantId, this.#tenantId),
+          eq(catalogImportRows.importId, input.importId),
+          eq(catalogImportRows.rowNumber, input.rowNumber)
+        )
+      )
+      .limit(1);
+    if (updated === undefined) throw new Error("Catalog import row classification failed");
+    return updated;
   }
 
   async commitStagedImport(importId: string): Promise<readonly CatalogItem[]> {
@@ -222,7 +366,6 @@ export class TenantCatalogService {
           eq(catalogImportRows.importId, importId)
         )
       )
-      .for("update")
       .orderBy(asc(catalogImportRows.rowNumber));
     if (stagedRows.length !== catalogImport.totalRows) {
       throw new Error("Catalog import row count changed after validation");
@@ -256,32 +399,71 @@ export class TenantCatalogService {
       }
     }
 
-    const committed =
+    const classificationEvents =
       readyRows.length === 0
         ? []
         : await this.#database
+            .select()
+            .from(catalogTaxClassifications)
+            .where(
+              and(
+                eq(catalogTaxClassifications.tenantId, this.#tenantId),
+                inArray(
+                  catalogTaxClassifications.importRowId,
+                  readyRows.map((row) => row.id)
+                )
+              )
+            );
+    const evidenceByRow = new Map(
+      classificationEvents.map((event) => [event.importRowId, event] as const)
+    );
+    const itemValues = readyRows.map((row) => {
+      const id = createEntityId();
+      return {
+        id,
+        row,
+        value: {
+          id,
+          tenantId: this.#tenantId,
+          sku: row.sku,
+          description: row.description,
+          brand: row.brand,
+          packSize: row.packSize,
+          uom: row.uom,
+          costMinor: row.costMinor,
+          costCurrency: row.costCurrency,
+          fxBufferBps: row.fxBufferBps,
+          taxClass: row.taxClass,
+          kraItemCode: row.kraItemCode,
+          hsCode: row.hsCode,
+          leadTimeDays: row.leadTimeDays,
+          minMarginBps: row.minMarginBps,
+          active: row.active
+        }
+      };
+    });
+    const committed =
+      itemValues.length === 0
+        ? []
+        : await this.#database
             .insert(items)
-            .values(
-              readyRows.map((row) => ({
-                id: createEntityId(),
-                tenantId: this.#tenantId,
-                sku: row.sku,
-                description: row.description,
-                brand: row.brand,
-                packSize: row.packSize,
-                uom: row.uom,
-                costMinor: row.costMinor,
-                costCurrency: row.costCurrency,
-                fxBufferBps: row.fxBufferBps,
-                taxClass: row.taxClass,
-                kraItemCode: row.kraItemCode,
-                hsCode: row.hsCode,
-                leadTimeDays: row.leadTimeDays,
-                minMarginBps: row.minMarginBps,
-                active: row.active
-              }))
-            )
+            .values(itemValues.map((entry) => entry.value))
             .returning();
+    for (const entry of itemValues) {
+      const evidence = evidenceByRow.get(entry.row.id);
+      if (evidence === undefined) {
+        throw new Error(`Catalog import row ${String(entry.row.rowNumber)} lacks tax evidence`);
+      }
+      await recordTaxClassification(this.#database, {
+        eventId: createEntityId(),
+        itemId: entry.id,
+        importRowId: entry.row.id,
+        taxClass: entry.row.taxClass,
+        source: evidence.source === "import_human" ? "import_human" : "import_file",
+        basisNote: evidence.basisNote,
+        userId: evidence.classifiedByUserId
+      });
+    }
 
     const finalized = await this.#database
       .update(catalogImports)

@@ -2,7 +2,14 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { catalogImportRows, createEntityId, createTenantRuntime, items } from "@zabuni/db";
+import {
+  catalogImportRows,
+  catalogImports,
+  catalogTaxClassifications,
+  createEntityId,
+  createTenantRuntime,
+  items
+} from "@zabuni/db";
 import { applyMigrations } from "@zabuni/db/admin";
 
 import {
@@ -58,7 +65,8 @@ describe("tenant catalog persistence", () => {
           description: "Case fixture",
           taxClass: "exempt",
           active: true
-        })
+        }),
+        { classifiedByUserId: userA, basisNote: "Case fixture source" }
       );
     });
     await expect(
@@ -70,7 +78,8 @@ describe("tenant catalog persistence", () => {
             description: "Case collision",
             taxClass: "exempt",
             active: true
-          })
+          }),
+          { classifiedByUserId: userA, basisNote: "Case collision fixture source" }
         );
       })
     ).rejects.toThrow();
@@ -87,13 +96,20 @@ describe("tenant catalog persistence", () => {
           costCurrency: "KES",
           taxClass: "standard_16",
           active: true
-        })
+        }),
+        { classifiedByUserId: userA, basisNote: "Catalog fixture source" }
       );
     });
     expect(serializeCatalogItem(created).costMinor).toBe("9007199254740993");
 
     await runtime.run(tenantA, async (database) => {
       const catalog = new TenantCatalogService(database, tenantA);
+      const initialEvents = await database
+        .select()
+        .from(catalogTaxClassifications)
+        .where(eq(catalogTaxClassifications.itemId, created.id));
+      expect(initialEvents).toHaveLength(1);
+      expect(initialEvents[0]).toMatchObject({ source: "manual_create", taxClass: "standard_16" });
       const updated = await catalog.update(
         created.id,
         validateCatalogInput({
@@ -104,6 +120,29 @@ describe("tenant catalog persistence", () => {
         })
       );
       expect(updated?.description).toBe("Catalog fixture updated");
+      const changedInput = validateCatalogInput({
+        sku: "CAT-CRUD-1",
+        description: "Catalog fixture updated",
+        taxClass: "zero_rated",
+        active: true
+      });
+      await expect(catalog.update(created.id, changedInput)).rejects.toThrow(/user/u);
+      await expect(
+        catalog.update(created.id, changedInput, {
+          classifiedByUserId: userA,
+          basisNote: "Reviewed reclassification fixture"
+        })
+      ).resolves.toMatchObject({ taxClass: "zero_rated" });
+      const changedEvents = await database
+        .select()
+        .from(catalogTaxClassifications)
+        .where(eq(catalogTaxClassifications.itemId, created.id));
+      expect(changedEvents).toHaveLength(2);
+      expect(changedEvents.find((event) => event.source === "manual_change")).toMatchObject({
+        source: "manual_change",
+        previousTaxClass: "standard_16",
+        taxClass: "zero_rated"
+      });
       await expect(catalog.archive(created.id)).resolves.toBe(true);
       const rows = await catalog.list();
       expect(rows.find((row) => row.id === created.id)?.active).toBe(false);
@@ -140,6 +179,98 @@ describe("tenant catalog persistence", () => {
       const rows = await database.select().from(items).where(eq(items.sku, "CAT-STAGE-1"));
       expect(rows).toEqual([]);
     });
+  });
+
+  it("classifies a staged row explicitly, recounts atomically, audits, and permits commit", async () => {
+    const preview = previewImport(
+      parseCsv(Buffer.from("sku,description,tax\nCAT-CLASS-1,Classification fixture,\n")),
+      { sku: "sku", description: "description", taxClass: "tax" }
+    );
+    const staged = await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      return catalog.stageImport("classification.csv", preview, userA);
+    });
+    await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      const classified = await catalog.classifyStagedRow({
+        importId: staged.id,
+        rowNumber: 2,
+        taxClass: "zero_rated",
+        classifiedByUserId: userA,
+        basisNote: "Reviewed against the tenant-provided classification record"
+      });
+      expect(classified).toMatchObject({ taxClass: "zero_rated", validationErrors: [] });
+      const [batch] = await database
+        .select()
+        .from(catalogImports)
+        .where(eq(catalogImports.id, staged.id));
+      expect(batch).toMatchObject({ validRows: 1, invalidRows: 0 });
+      const events = await database
+        .select()
+        .from(catalogTaxClassifications)
+        .where(eq(catalogTaxClassifications.importRowId, classified.id));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        taxClass: "zero_rated",
+        source: "import_human",
+        classifiedByUserId: userA
+      });
+    });
+    await expect(
+      runtime.run(tenantA, async (database) => {
+        const catalog = new TenantCatalogService(database, tenantA);
+        return catalog.classifyStagedRow({
+          importId: staged.id,
+          rowNumber: 2,
+          taxClass: "exempt",
+          classifiedByUserId: userA,
+          basisNote: "Attempted second decision"
+        });
+      })
+    ).rejects.toThrow();
+    const committed = await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      return catalog.commitStagedImport(staged.id);
+    });
+    expect(committed).toHaveLength(1);
+    await runtime.run(tenantA, async (database) => {
+      const itemEvents = await database
+        .select()
+        .from(catalogTaxClassifications)
+        .where(eq(catalogTaxClassifications.itemId, committed[0]?.id ?? ""));
+      expect(itemEvents).toHaveLength(1);
+      expect(itemEvents[0]).toMatchObject({
+        source: "import_human",
+        taxClass: "zero_rated",
+        classifiedByUserId: userA
+      });
+      expect(itemEvents[0]?.importRowId).not.toBeNull();
+    });
+  });
+
+  it("allows only one winner when the same staged row is classified concurrently", async () => {
+    const preview = previewImport(
+      parseCsv(Buffer.from("sku,description,tax\nCAT-CLASS-RACE,Classification race,\n")),
+      { sku: "sku", description: "description", taxClass: "tax" }
+    );
+    const staged = await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      return catalog.stageImport("classification-race.csv", preview, userA);
+    });
+    const classify = (taxClass: "standard_16" | "exempt") =>
+      runtime.run(tenantA, async (database) => {
+        const catalog = new TenantCatalogService(database, tenantA);
+        return catalog.classifyStagedRow({
+          importId: staged.id,
+          rowNumber: 2,
+          taxClass,
+          classifiedByUserId: userA,
+          basisNote: `Concurrent fixture decision ${taxClass}`
+        });
+      });
+    const outcomes = await Promise.allSettled([classify("standard_16"), classify("exempt")]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
   });
 
   it("commits a fully valid staged import and rejects an existing SKU without overwriting", async () => {

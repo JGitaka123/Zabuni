@@ -23,6 +23,10 @@
     "./privileged/outbox": {
       "types": "./dist/privileged/outbox.d.ts",
       "import": "./dist/privileged/outbox.js"
+    },
+    "./privileged/catalog-tax": {
+      "types": "./dist/privileged/catalog-tax.d.ts",
+      "import": "./dist/privileged/catalog-tax.js"
     }
   },
   "scripts": {
