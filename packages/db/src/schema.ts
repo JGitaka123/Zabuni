@@ -21,6 +21,9 @@ export type TenantRole = (typeof tenantRoles)[number];
 export const taxClasses = ["standard_16", "zero_rated", "exempt"] as const;
 export type TaxClass = (typeof taxClasses)[number];
 
+export const catalogImportStatuses = ["staged", "committed", "failed"] as const;
+export type CatalogImportStatus = (typeof catalogImportStatuses)[number];
+
 export const usageMetrics = [
   "rfq_parsed",
   "quote_sent",
@@ -282,6 +285,7 @@ export const items = pgTable(
     }).onDelete("cascade"),
     uniqueIndex("items_tenant_id_id_unique").on(table.tenantId, table.id),
     uniqueIndex("items_tenant_sku_unique").on(table.tenantId, table.sku),
+    uniqueIndex("items_tenant_sku_casefold_unique").on(table.tenantId, sql`lower(${table.sku})`),
     index("items_tenant_active_idx").on(table.tenantId, table.active),
     check("items_sku_not_blank", sql`btrim(${table.sku}) <> ''`),
     check("items_description_not_blank", sql`btrim(${table.description}) <> ''`),
@@ -312,6 +316,161 @@ export const items = pgTable(
     check(
       "items_min_margin_bps_check",
       sql`${table.minMarginBps} IS NULL OR ${table.minMarginBps} BETWEEN 0 AND 10000`
+    )
+  ]
+);
+
+export const catalogImports = pgTable(
+  "catalog_imports",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    sourceFilename: text("source_filename").notNull(),
+    status: text("status").$type<CatalogImportStatus>().notNull().default("staged"),
+    columnMapping: jsonb("column_mapping").$type<Record<string, string>>().notNull().default({}),
+    totalRows: integer("total_rows").notNull().default(0),
+    validRows: integer("valid_rows").notNull().default(0),
+    invalidRows: integer("invalid_rows").notNull().default(0),
+    createdByUserId: uuid("created_by_user_id"),
+    committedAt: timestamp("committed_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "catalog_imports_tenant_id_tenants_id_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tenantId, table.createdByUserId],
+      foreignColumns: [users.tenantId, users.id],
+      name: "catalog_imports_tenant_created_by_user_fk"
+    }),
+    uniqueIndex("catalog_imports_tenant_id_id_unique").on(table.tenantId, table.id),
+    index("catalog_imports_tenant_status_created_idx").on(
+      table.tenantId,
+      table.status,
+      table.createdAt
+    ),
+    check("catalog_imports_source_filename_not_blank", sql`btrim(${table.sourceFilename}) <> ''`),
+    check(
+      "catalog_imports_status_check",
+      sql`${table.status} IN ('staged', 'committed', 'failed')`
+    ),
+    check(
+      "catalog_imports_column_mapping_object_check",
+      sql`jsonb_typeof(${table.columnMapping}) = 'object'`
+    ),
+    check(
+      "catalog_imports_row_counts_check",
+      sql`${table.totalRows} >= 0 AND ${table.validRows} >= 0 AND ${table.invalidRows} >= 0 AND ${table.validRows} + ${table.invalidRows} <= ${table.totalRows}`
+    ),
+    check(
+      "catalog_imports_commit_state_check",
+      sql`(${table.status} = 'committed' AND ${table.committedAt} IS NOT NULL) OR (${table.status} <> 'committed' AND ${table.committedAt} IS NULL)`
+    ),
+    check(
+      "catalog_imports_commit_counts_check",
+      sql`${table.status} <> 'committed' OR (${table.invalidRows} = 0 AND ${table.validRows} = ${table.totalRows})`
+    )
+  ]
+);
+
+export const catalogImportRows = pgTable(
+  "catalog_import_rows",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    importId: uuid("import_id").notNull(),
+    rowNumber: integer("row_number").notNull(),
+    rawData: jsonb("raw_data").$type<Record<string, unknown>>().notNull(),
+    sku: text("sku"),
+    description: text("description"),
+    brand: text("brand"),
+    packSize: text("pack_size"),
+    uom: text("uom"),
+    costMinor: bigint("cost_minor", { mode: "bigint" }),
+    costCurrency: char("cost_currency", { length: 3 }),
+    fxBufferBps: integer("fx_buffer_bps"),
+    taxClass: text("tax_class").$type<TaxClass>(),
+    kraItemCode: text("kra_item_code"),
+    hsCode: text("hs_code"),
+    leadTimeDays: integer("lead_time_days"),
+    minMarginBps: integer("min_margin_bps"),
+    active: boolean("active"),
+    validationErrors: jsonb("validation_errors").$type<string[]>().notNull().default([]),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "catalog_import_rows_tenant_id_tenants_id_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tenantId, table.importId],
+      foreignColumns: [catalogImports.tenantId, catalogImports.id],
+      name: "catalog_import_rows_tenant_import_fk"
+    }).onDelete("cascade"),
+    uniqueIndex("catalog_import_rows_tenant_id_id_unique").on(table.tenantId, table.id),
+    uniqueIndex("catalog_import_rows_tenant_import_row_unique").on(
+      table.tenantId,
+      table.importId,
+      table.rowNumber
+    ),
+    index("catalog_import_rows_tenant_import_idx").on(
+      table.tenantId,
+      table.importId,
+      table.rowNumber
+    ),
+    index("catalog_import_rows_tenant_import_errors_idx")
+      .on(table.tenantId, table.importId)
+      .where(sql`${table.validationErrors} <> '[]'::jsonb`),
+    check("catalog_import_rows_row_number_check", sql`${table.rowNumber} > 0`),
+    check(
+      "catalog_import_rows_raw_data_object_check",
+      sql`jsonb_typeof(${table.rawData}) = 'object'`
+    ),
+    check(
+      "catalog_import_rows_sku_not_blank",
+      sql`${table.sku} IS NULL OR btrim(${table.sku}) <> ''`
+    ),
+    check(
+      "catalog_import_rows_description_not_blank",
+      sql`${table.description} IS NULL OR btrim(${table.description}) <> ''`
+    ),
+    check(
+      "catalog_import_rows_tax_class_check",
+      sql`${table.taxClass} IS NULL OR ${table.taxClass} IN ('standard_16', 'zero_rated', 'exempt')`
+    ),
+    check(
+      "catalog_import_rows_cost_pair_check",
+      sql`(${table.costMinor} IS NULL) = (${table.costCurrency} IS NULL)`
+    ),
+    check(
+      "catalog_import_rows_cost_nonnegative_check",
+      sql`${table.costMinor} IS NULL OR ${table.costMinor} >= 0`
+    ),
+    check(
+      "catalog_import_rows_cost_currency_check",
+      sql`${table.costCurrency} IS NULL OR ${table.costCurrency} ~ '^[A-Z]{3}$'`
+    ),
+    check(
+      "catalog_import_rows_fx_buffer_bps_check",
+      sql`${table.fxBufferBps} IS NULL OR ${table.fxBufferBps} >= 0`
+    ),
+    check(
+      "catalog_import_rows_lead_time_days_check",
+      sql`${table.leadTimeDays} IS NULL OR ${table.leadTimeDays} >= 0`
+    ),
+    check(
+      "catalog_import_rows_min_margin_bps_check",
+      sql`${table.minMarginBps} IS NULL OR ${table.minMarginBps} BETWEEN 0 AND 10000`
+    ),
+    check(
+      "catalog_import_rows_validation_errors_array_check",
+      sql`jsonb_typeof(${table.validationErrors}) = 'array'`
     )
   ]
 );
@@ -455,6 +614,8 @@ export const schema = {
   authMemberships,
   authOnboardingAudit,
   items,
+  catalogImports,
+  catalogImportRows,
   usageEvents,
   outbox,
   incidents
@@ -465,6 +626,8 @@ export const tenantTableRegistry = [
   { scopeColumn: "tenant_id", sqlName: "users", table: users },
   { scopeColumn: "tenant_id", sqlName: "auth_membership", table: authMemberships },
   { scopeColumn: "tenant_id", sqlName: "items", table: items },
+  { scopeColumn: "tenant_id", sqlName: "catalog_imports", table: catalogImports },
+  { scopeColumn: "tenant_id", sqlName: "catalog_import_rows", table: catalogImportRows },
   { scopeColumn: "tenant_id", sqlName: "usage_events", table: usageEvents },
   { scopeColumn: "tenant_id", sqlName: "outbox", table: outbox },
   { scopeColumn: "tenant_id", sqlName: "incidents", table: incidents }

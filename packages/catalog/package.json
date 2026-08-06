@@ -1,28 +1,31 @@
 {
-  "name": "@zabuni/api",
+  "name": "@zabuni/catalog",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "dev": "tsx watch src/index.ts"
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@zabuni/catalog": "workspace:*",
-    "@zabuni/auth": "workspace:*",
+    "@zabuni/core": "workspace:*",
     "@zabuni/db": "workspace:*",
-    "@zabuni/observability": "workspace:*",
-    "@hono/node-server": "1.19.1",
+    "csv-parse": "6.1.0",
     "drizzle-orm": "0.44.5",
-    "hono": "4.9.4"
+    "exceljs": "4.4.0"
   },
   "devDependencies": {
     "@types/node": "22.18.0",
-    "tsx": "4.20.5",
+    "postgres": "3.4.7",
     "typescript": "5.9.2",
     "vitest": "3.2.4"
   }

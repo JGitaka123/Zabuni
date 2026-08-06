@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import { requireTenantSession, type SessionVariables } from "./middleware/session.js";
+import { registerCatalogRoutes } from "./catalog.js";
 
 export interface AppDependencies {
   readonly auth: AuthServer;
@@ -56,7 +57,7 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
     cors({
       origin: dependencies.webOrigin,
       allowHeaders: ["Content-Type"],
-      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       credentials: true
     })
   );
@@ -104,5 +105,6 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
       });
     }
   );
+  registerCatalogRoutes(app, dependencies);
   return app;
 }

@@ -20,7 +20,9 @@ describe("forward-only migrations", () => {
       "0006_auth.sql",
       "0007_outbox_worker.sql",
       "0008_observability.sql",
-      "0009_outbox_claim_hardening.sql"
+      "0009_outbox_claim_hardening.sql",
+      "0010_catalog_imports.sql",
+      "0011_items_sku_casefold.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });
@@ -68,6 +70,13 @@ describe("forward-only migrations", () => {
     expect(itemsMigration?.sql).toMatch(/tax_class text NOT NULL/u);
     expect(itemsMigration?.sql).not.toMatch(/tax_class text NOT NULL DEFAULT/u);
     expect(itemsMigration?.sql).toContain("'standard_16', 'zero_rated', 'exempt'");
+
+    const catalogMigration = migrations.find(({ name }) => name === "0010_catalog_imports.sql");
+    expect(catalogMigration?.sql).toMatch(/tax_class text,/u);
+    expect(catalogMigration?.sql).not.toMatch(/tax_class text NOT NULL/u);
+    expect(catalogMigration?.sql).toContain(
+      "tax_class IS NULL OR tax_class IN ('standard_16', 'zero_rated', 'exempt')"
+    );
   });
 
   it("never uses database-generated UUID defaults or floating-point money", async () => {

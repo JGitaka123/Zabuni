@@ -7,6 +7,8 @@ import { createEntityId } from "../src/ids.js";
 import { applyMigrations } from "../src/migrate.js";
 import {
   authMemberships,
+  catalogImportRows,
+  catalogImports,
   incidents,
   items,
   outbox,
@@ -38,6 +40,10 @@ const ids = {
   userB: createEntityId(),
   itemA: createEntityId(),
   itemB: createEntityId(),
+  catalogImportA: createEntityId(),
+  catalogImportB: createEntityId(),
+  catalogImportRowA: createEntityId(),
+  catalogImportRowB: createEntityId(),
   usageA: createEntityId(),
   usageB: createEntityId(),
   outboxA: createEntityId(),
@@ -128,6 +134,25 @@ beforeAll(async () => {
            (${ids.itemB}, ${tenantB}, 'B-1', 'B item', 'zero_rated')
   `;
   await admin`
+    INSERT INTO catalog_imports (id, tenant_id, source_filename, total_rows, invalid_rows)
+    VALUES (${ids.catalogImportA}, ${tenantA}, 'tenant-a.csv', 1, 1),
+           (${ids.catalogImportB}, ${tenantB}, 'tenant-b.xlsx', 1, 0)
+  `;
+  await admin`
+    INSERT INTO catalog_import_rows (
+      id, tenant_id, import_id, row_number, raw_data, sku, description, tax_class,
+      validation_errors
+    )
+    VALUES (
+      ${ids.catalogImportRowA}, ${tenantA}, ${ids.catalogImportA}, 1,
+      '{"SKU":"A-STAGED"}'::jsonb, 'A-STAGED', 'Needs classification', NULL,
+      '["tax_class is required"]'::jsonb
+    ), (
+      ${ids.catalogImportRowB}, ${tenantB}, ${ids.catalogImportB}, 1,
+      '{"SKU":"B-STAGED"}'::jsonb, 'B-STAGED', 'Ready', 'exempt', '[]'::jsonb
+    )
+  `;
+  await admin`
     INSERT INTO usage_events (id, tenant_id, metric, quantity, occurred_at, unit_cost_minor, cost_currency)
     VALUES (${ids.usageA}, ${tenantA}, 'llm_tokens', 1, now(), 1, 'KES'),
            (${ids.usageB}, ${tenantB}, 'llm_tokens', 1, now(), 1, 'KES')
@@ -160,6 +185,12 @@ describe("tenant RLS through Drizzle", () => {
         { id: ids.membershipA }
       ]);
       await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([{ id: ids.itemA }]);
+      await expect(db.select({ id: catalogImports.id }).from(catalogImports)).resolves.toEqual([
+        { id: ids.catalogImportA }
+      ]);
+      await expect(
+        db.select({ id: catalogImportRows.id }).from(catalogImportRows)
+      ).resolves.toEqual([{ id: ids.catalogImportRowA }]);
       await expect(db.select({ id: usageEvents.id }).from(usageEvents)).resolves.toEqual([
         { id: ids.usageA }
       ]);
@@ -170,6 +201,9 @@ describe("tenant RLS through Drizzle", () => {
         { id: ids.incidentA }
       ]);
       await expect(db.select().from(items).where(eq(items.id, ids.itemB))).resolves.toEqual([]);
+      await expect(
+        db.select().from(catalogImports).where(eq(catalogImports.id, ids.catalogImportB))
+      ).resolves.toEqual([]);
     });
   });
 
@@ -180,6 +214,9 @@ describe("tenant RLS through Drizzle", () => {
       await expect(db.select({ id: authMemberships.id }).from(authMemberships)).resolves.toEqual([
         { id: ids.membershipB }
       ]);
+      await expect(
+        db.select({ id: catalogImportRows.id }).from(catalogImportRows)
+      ).resolves.toEqual([{ id: ids.catalogImportRowB }]);
     });
   });
 
@@ -228,6 +265,93 @@ describe("tenant RLS through Drizzle", () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: "42501" } });
+
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(catalogImports).values({
+          id: createEntityId(),
+          tenantId: tenantB,
+          sourceFilename: "forged.csv"
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+  });
+
+  it("permits safe catalog writes but forbids physical item deletion", async () => {
+    const itemId = createEntityId();
+    await withTenant(app.db, tenantA, async (db) => {
+      await db.insert(items).values({
+        id: itemId,
+        tenantId: tenantA,
+        sku: `SAFE-${itemId}`,
+        description: "Safe item",
+        taxClass: "exempt"
+      });
+      await db.update(items).set({ active: false }).where(eq(items.id, itemId));
+      const [archived] = await db.select().from(items).where(eq(items.id, itemId));
+      expect(archived?.active).toBe(false);
+    });
+    await expect(
+      withTenant(app.db, tenantA, (db) => db.delete(items).where(eq(items.id, itemId)))
+    ).rejects.toMatchObject({
+      cause: { code: "42501" }
+    });
+    await admin`DELETE FROM items WHERE id = ${itemId}`;
+  });
+
+  it("preserves committed import audit history", async () => {
+    const importId = createEntityId();
+    const rowId = createEntityId();
+    await withTenant(app.db, tenantA, async (db) => {
+      await db.insert(catalogImports).values({
+        id: importId,
+        tenantId: tenantA,
+        sourceFilename: "audit.csv",
+        totalRows: 1,
+        validRows: 1
+      });
+      await db.insert(catalogImportRows).values({
+        id: rowId,
+        tenantId: tenantA,
+        importId,
+        rowNumber: 1,
+        rawData: { SKU: "AUDIT-1" },
+        sku: "AUDIT-1",
+        description: "Audit row",
+        taxClass: "standard_16"
+      });
+      await db
+        .update(catalogImports)
+        .set({ status: "committed", committedAt: new Date() })
+        .where(eq(catalogImports.id, importId));
+      await expect(
+        db
+          .update(catalogImports)
+          .set({ sourceFilename: "tampered.csv" })
+          .where(eq(catalogImports.id, importId))
+          .returning({ id: catalogImports.id })
+      ).resolves.toEqual([]);
+      await expect(
+        db
+          .update(catalogImportRows)
+          .set({ sku: "TAMPERED" })
+          .where(eq(catalogImportRows.id, rowId))
+          .returning({ id: catalogImportRows.id })
+      ).resolves.toEqual([]);
+    });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.delete(catalogImportRows).where(eq(catalogImportRows.id, rowId))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .delete(catalogImports)
+          .where(eq(catalogImports.id, importId))
+          .returning({ id: catalogImports.id })
+      )
+    ).resolves.toEqual([]);
   });
 
   it("rejects cross-tenant parent references", async () => {
@@ -235,6 +359,16 @@ describe("tenant RLS through Drizzle", () => {
       admin`
         INSERT INTO incidents (id, tenant_id, outbox_id, kind, summary)
         VALUES (${createEntityId()}, ${tenantA}, ${ids.outboxB}, 'invalid', 'cross-tenant link')
+      `
+    ).rejects.toMatchObject({ code: "23503" });
+
+    await expect(
+      admin`
+        INSERT INTO catalog_import_rows (
+          id, tenant_id, import_id, row_number, raw_data, validation_errors
+        ) VALUES (
+          ${createEntityId()}, ${tenantA}, ${ids.catalogImportB}, 99, '{}'::jsonb, '[]'::jsonb
+        )
       `
     ).rejects.toMatchObject({ code: "23503" });
   });
@@ -383,15 +517,34 @@ describe("tenant RLS through Drizzle", () => {
       WHERE grantee = 'zabuni_app' AND table_schema = 'public'
       ORDER BY table_name, privilege_type
     `;
-    expect(
-      grants.filter(({ privilege }) => privilege === "DELETE" || privilege === "UPDATE")
-    ).toEqual([]);
+    expect(grants.filter(({ privilege }) => privilege === "DELETE")).toEqual([
+      { privilege: "DELETE", tableName: "catalog_imports" }
+    ]);
+    expect(grants.filter(({ privilege }) => privilege === "UPDATE")).toEqual([
+      { privilege: "UPDATE", tableName: "catalog_import_rows" },
+      { privilege: "UPDATE", tableName: "catalog_imports" }
+    ]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
+      { privilege: "INSERT", tableName: "catalog_import_rows" },
+      { privilege: "INSERT", tableName: "catalog_imports" },
       { privilege: "INSERT", tableName: "usage_events" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(
       registeredNames.length
     );
+
+    const itemColumnGrants = await admin<{ columnName: string; privilege: string }[]>`
+      SELECT column_name AS "columnName", privilege_type AS privilege
+      FROM information_schema.column_privileges
+      WHERE grantee = 'zabuni_app' AND table_schema = 'public' AND table_name = 'items'
+        AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE')
+      ORDER BY privilege_type, column_name
+    `;
+    expect(itemColumnGrants.some(({ privilege }) => privilege === "INSERT")).toBe(true);
+    expect(itemColumnGrants.some(({ privilege }) => privilege === "UPDATE")).toBe(true);
+    expect(itemColumnGrants).not.toContainEqual({ columnName: "tenant_id", privilege: "UPDATE" });
+    expect(itemColumnGrants).not.toContainEqual({ columnName: "id", privilege: "UPDATE" });
+    expect(itemColumnGrants.some(({ privilege }) => privilege === "DELETE")).toBe(false);
 
     const owners = await admin<{ owner: string }[]>`
       SELECT tableowner AS owner FROM pg_tables

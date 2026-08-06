@@ -71,18 +71,23 @@ export default function ShellPage() {
             <p role="status">{message}</p>
           </form>
         ) : (
-          <dl>
-            <dt>Authenticated</dt>
-            <dd>Yes</dd>
-            <dt>Tenant status</dt>
-            <dd>{proof.tenantStatus}</dd>
-            <dt>Role</dt>
-            <dd>{proof.role}</dd>
-            <dt>Tenant context</dt>
-            <dd>
-              <code>{proof.tenantId}</code>
-            </dd>
-          </dl>
+          <>
+            <dl>
+              <dt>Authenticated</dt>
+              <dd>Yes</dd>
+              <dt>Tenant status</dt>
+              <dd>{proof.tenantStatus}</dd>
+              <dt>Role</dt>
+              <dd>{proof.role}</dd>
+              <dt>Tenant context</dt>
+              <dd>
+                <code>{proof.tenantId}</code>
+              </dd>
+            </dl>
+            <p>
+              <a href="/catalog">Open catalog operations</a>
+            </p>
+          </>
         )}
       </section>
     </main>
