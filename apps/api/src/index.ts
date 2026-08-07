@@ -5,6 +5,7 @@ import {
   FixtureOtpTransport,
   UnconfiguredOtpTransport
 } from "@zabuni/auth";
+import { FixtureEmbeddingProvider } from "@zabuni/catalog";
 import { createTenantRuntime } from "@zabuni/db";
 import { createPinoStructuredLogger, initializeNodeSentry } from "@zabuni/observability";
 
@@ -28,6 +29,8 @@ if (databaseUrl === undefined || authDatabaseUrl === undefined || authSecret ===
 }
 
 const integrationMode = process.env.INTEGRATION_MODE ?? "fixture";
+const embeddingProvider =
+  integrationMode === "fixture" ? new FixtureEmbeddingProvider() : undefined;
 const otpTransport =
   integrationMode === "fixture" ? new FixtureOtpTransport() : new UnconfiguredOtpTransport();
 const authRuntime = createAuthRuntime(authDatabaseUrl, {
@@ -45,6 +48,7 @@ serve({
     auth: authRuntime.auth,
     memberships,
     tenants: tenantRuntime,
+    ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
     webOrigin,
     telemetry: { logger, errors }
   }).fetch,

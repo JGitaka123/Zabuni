@@ -26,9 +26,43 @@ describe("forward-only migrations", () => {
       "0012_tax_classification_workflow.sql",
       "0013_tax_classification_privileges.sql",
       "0014_tax_evidence_enforcement.sql",
-      "0015_tax_evidence_preflight.sql"
+      "0015_tax_evidence_preflight.sql",
+      "0016_catalog_matching.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("adds pgvector catalog embeddings and tenant aliases", async () => {
+    const migrations = await readMigrations();
+    const matching = migrations.find(({ name }) => name === "0016_catalog_matching.sql")?.sql ?? "";
+
+    expect(matching).toContain("FROM pg_available_extensions");
+    expect(matching).toContain("CREATE EXTENSION IF NOT EXISTS vector");
+    expect(matching).toContain("embedding vector(1024) NOT NULL");
+    expect(matching).toContain("USING hnsw (embedding vector_cosine_ops)");
+    expect(matching).toContain("UNIQUE (tenant_id, item_id)");
+    expect(matching).toContain(
+      "FOREIGN KEY (tenant_id, item_id) REFERENCES items (tenant_id, id) ON DELETE CASCADE"
+    );
+    expect(matching).toContain("ON item_aliases (tenant_id, lower(alias_text))");
+    expect(matching).toContain("source IN ('human', 'accepted_match')");
+    expect(matching).toContain("CHECK (hit_count >= 0)");
+    expect(matching).toContain("CREATE TABLE catalog_alias_quotas");
+    expect(matching).toContain("CREATE TRIGGER item_aliases_limit_guard");
+    expect(matching).toContain("CREATE TABLE catalog_match_rate_limits");
+    expect(matching).toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON item_embeddings, item_aliases TO zabuni_app"
+    );
+    for (const table of [
+      "item_embeddings",
+      "item_aliases",
+      "catalog_alias_quotas",
+      "catalog_match_rate_limits"
+    ]) {
+      expect(matching).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+      expect(matching).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
+      expect(matching).toContain(`CREATE POLICY ${table}_boundary ON ${table} AS RESTRICTIVE`);
+    }
   });
 
   it("adds retry-safe total-event LLM call metering", async () => {

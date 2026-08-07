@@ -1,36 +1,56 @@
 import {
   catalogFields,
+  acquireCatalogMatchConcurrency,
+  CatalogRateLimitError,
   CatalogMappingError,
   CatalogValidationError,
+  consumeCatalogRequestRate,
+  normalizeMatchText,
   parseCsv,
   parseXlsx,
   previewImport,
   serializeCatalogItem,
+  TenantCatalogMatcher,
   TenantCatalogService,
   validateCatalogInput,
   type CatalogInput,
   type ColumnMapping,
+  type EmbeddingProvider,
   type TaxClass
 } from "@zabuni/catalog";
 import type { AuthServer, MembershipRuntime } from "@zabuni/auth";
 import type { TenantRole, TenantRuntime } from "@zabuni/db";
 import { isUuidV7 } from "@zabuni/db";
 import type { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 
 import { requireTenantSession, type SessionVariables } from "./middleware/session.js";
 
 const MAX_CATALOG_FILE_BYTES = 10 * 1024 * 1024;
 const catalogFieldSet = new Set<string>(catalogFields);
 const taxClassSet = new Set<TaxClass>(["standard_16", "zero_rated", "exempt"]);
+const catalogJsonBodyLimit = bodyLimit({
+  maxSize: 4 * 1024,
+  onError: (context) => context.json({ error: "catalog_request_too_large" }, 413)
+});
 
 interface CatalogDependencies {
   readonly auth: AuthServer;
   readonly memberships: MembershipRuntime;
   readonly tenants: TenantRuntime;
+  readonly embeddingProvider?: EmbeddingProvider;
 }
 
 function mayWriteCatalog(role: TenantRole): boolean {
   return role === "owner" || role === "manager";
+}
+
+function mayConfirmMatch(role: TenantRole): boolean {
+  return mayWriteCatalog(role) || role === "sales";
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mappingFromJson(value: string): ColumnMapping {
@@ -93,8 +113,15 @@ export function registerCatalogRoutes(
   app: Hono<{ Variables: SessionVariables }>,
   dependencies: CatalogDependencies
 ): void {
+  if (
+    dependencies.embeddingProvider !== undefined &&
+    dependencies.embeddingProvider.descriptor.provider !== "fixture"
+  ) {
+    throw new Error(
+      "Request-path embedding is restricted to the offline fixture provider; production embedding must run outside database transactions"
+    );
+  }
   const tenantSession = requireTenantSession(dependencies.auth, dependencies.memberships);
-
   app.get("/catalog/items", tenantSession, async (context) => {
     const session = context.get("tenantSession");
     const rows = await dependencies.tenants.run(session.tenantId, async (database) => {
@@ -102,6 +129,220 @@ export function registerCatalogRoutes(
       return catalog.list();
     });
     return context.json({ items: rows.map(serializeCatalogItem) });
+  });
+
+  app.post("/catalog/matches", catalogJsonBodyLimit, tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    try {
+      let body: unknown;
+      try {
+        body = await context.req.json();
+      } catch {
+        return context.json({ error: "catalog_match_invalid" }, 400);
+      }
+      if (!isJsonObject(body) || typeof body.query !== "string") {
+        return context.json({ error: "catalog_match_invalid" }, 400);
+      }
+      try {
+        normalizeMatchText(body.query);
+      } catch {
+        return context.json({ error: "catalog_match_invalid" }, 400);
+      }
+      const limit = body.limit === undefined ? undefined : body.limit;
+      if (
+        limit !== undefined &&
+        (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 25)
+      ) {
+        return context.json({ error: "catalog_match_invalid" }, 400);
+      }
+      await dependencies.tenants.run(session.tenantId, (database) =>
+        consumeCatalogRequestRate(database, session.tenantId, session.userId, "match")
+      );
+      const result = await dependencies.tenants.run(session.tenantId, async (database) => {
+        await acquireCatalogMatchConcurrency(database, session.tenantId, session.userId);
+        const matcher = new TenantCatalogMatcher(database, session.tenantId);
+        return matcher.match(body.query as string, {
+          ...(limit === undefined ? {} : { limit }),
+          ...(dependencies.embeddingProvider === undefined
+            ? {}
+            : { provider: dependencies.embeddingProvider })
+        });
+      });
+      return context.json(result);
+    } catch (error) {
+      if (error instanceof Error && /Match text|Match limit/u.test(error.message)) {
+        return context.json({ error: "catalog_match_invalid" }, 400);
+      }
+      if (error instanceof CatalogRateLimitError) {
+        return context.json({ error: "catalog_match_rate_limited" }, 429);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/catalog/matches/confirm", catalogJsonBodyLimit, tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    if (!mayConfirmMatch(session.role)) {
+      return context.json({ error: "catalog_match_confirmation_denied" }, 403);
+    }
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "catalog_match_confirmation_invalid" }, 400);
+    }
+    if (
+      !isJsonObject(body) ||
+      typeof body.query !== "string" ||
+      typeof body.itemId !== "string" ||
+      !isUuidV7(body.itemId)
+    ) {
+      return context.json({ error: "catalog_match_confirmation_invalid" }, 400);
+    }
+    try {
+      await dependencies.tenants.run(session.tenantId, (database) =>
+        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+      );
+      const alias = await dependencies.tenants.run(session.tenantId, async (database) => {
+        const matcher = new TenantCatalogMatcher(database, session.tenantId);
+        return matcher.confirmMatch(body.query as string, body.itemId as string);
+      });
+      return context.json({ alias }, 201);
+    } catch (error) {
+      if (
+        isUniqueViolation(error) ||
+        (error instanceof Error && error.message.includes("assigned"))
+      ) {
+        return context.json({ error: "catalog_alias_conflict" }, 409);
+      }
+      if (error instanceof Error && /safe characters|not found|inactive/u.test(error.message)) {
+        return context.json({ error: "catalog_match_confirmation_invalid" }, 400);
+      }
+      if (error instanceof Error && error.message.includes("alias limit")) {
+        return context.json({ error: "catalog_alias_limit_reached" }, 409);
+      }
+      if (error instanceof CatalogRateLimitError) {
+        return context.json({ error: "catalog_alias_rate_limited" }, 429);
+      }
+      throw error;
+    }
+  });
+
+  app.get("/catalog/aliases", tenantSession, async (context) => {
+    const itemId = context.req.query("itemId");
+    const limit = Number(context.req.query("limit") ?? "100");
+    const offset = Number(context.req.query("offset") ?? "0");
+    if (itemId !== undefined && !isUuidV7(itemId)) {
+      return context.json({ error: "catalog_item_id_invalid" }, 400);
+    }
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0
+    ) {
+      return context.json({ error: "catalog_alias_page_invalid" }, 400);
+    }
+    const session = context.get("tenantSession");
+    const aliases = await dependencies.tenants.run(session.tenantId, async (database) => {
+      const matcher = new TenantCatalogMatcher(database, session.tenantId);
+      return matcher.listAliases(itemId, { limit, offset });
+    });
+    return context.json({ aliases });
+  });
+
+  app.post("/catalog/aliases", catalogJsonBodyLimit, tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "catalog_alias_invalid" }, 400);
+    }
+    if (
+      !isJsonObject(body) ||
+      typeof body.itemId !== "string" ||
+      !isUuidV7(body.itemId) ||
+      typeof body.aliasText !== "string" ||
+      (body.reassign !== undefined && typeof body.reassign !== "boolean")
+    ) {
+      return context.json({ error: "catalog_alias_invalid" }, 400);
+    }
+    try {
+      await dependencies.tenants.run(session.tenantId, (database) =>
+        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+      );
+      const alias = await dependencies.tenants.run(session.tenantId, async (database) => {
+        const matcher = new TenantCatalogMatcher(database, session.tenantId);
+        return matcher.addAlias({
+          itemId: body.itemId as string,
+          aliasText: body.aliasText as string,
+          source: "human",
+          ...(body.reassign === true ? { reassign: true } : {})
+        });
+      });
+      return context.json({ alias }, 201);
+    } catch (error) {
+      if (
+        isUniqueViolation(error) ||
+        (error instanceof Error && error.message.includes("assigned"))
+      ) {
+        return context.json({ error: "catalog_alias_conflict" }, 409);
+      }
+      if (error instanceof Error && /safe characters|not found|inactive/u.test(error.message)) {
+        return context.json({ error: "catalog_alias_invalid" }, 400);
+      }
+      if (error instanceof Error && error.message.includes("alias limit")) {
+        return context.json({ error: "catalog_alias_limit_reached" }, 409);
+      }
+      if (error instanceof CatalogRateLimitError) {
+        return context.json({ error: "catalog_alias_rate_limited" }, 429);
+      }
+      throw error;
+    }
+  });
+
+  app.delete("/catalog/aliases/:aliasId", tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
+    const aliasId = context.req.param("aliasId");
+    if (!isUuidV7(aliasId)) return context.json({ error: "catalog_alias_id_invalid" }, 400);
+    let removed: boolean;
+    try {
+      await dependencies.tenants.run(session.tenantId, (database) =>
+        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+      );
+      removed = await dependencies.tenants.run(session.tenantId, async (database) => {
+        const matcher = new TenantCatalogMatcher(database, session.tenantId);
+        return matcher.removeAlias(aliasId);
+      });
+    } catch (error) {
+      if (error instanceof CatalogRateLimitError) {
+        return context.json({ error: "catalog_alias_rate_limited" }, 429);
+      }
+      throw error;
+    }
+    if (!removed) return context.json({ error: "catalog_alias_not_found" }, 404);
+    return context.json({ removed: true });
+  });
+
+  app.post("/catalog/items/:itemId/embedding", tenantSession, async (context) => {
+    const session = context.get("tenantSession");
+    if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
+    const itemId = context.req.param("itemId");
+    if (!isUuidV7(itemId)) return context.json({ error: "catalog_item_id_invalid" }, 400);
+    const embeddingProvider = dependencies.embeddingProvider;
+    if (embeddingProvider === undefined) {
+      return context.json({ error: "catalog_embedding_provider_unavailable" }, 503);
+    }
+    const outcome = await dependencies.tenants.run(session.tenantId, async (database) => {
+      const matcher = new TenantCatalogMatcher(database, session.tenantId);
+      return matcher.refreshItemEmbedding(itemId, embeddingProvider);
+    });
+    if (outcome === "not_found") return context.json({ error: "catalog_item_not_found" }, 404);
+    return context.json({ outcome });
   });
 
   app.post("/catalog/items", tenantSession, async (context) => {

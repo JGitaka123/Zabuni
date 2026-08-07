@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "eval:matching:fixture": "tsx src/evaluate-cli.ts"
   },
   "dependencies": {
     "@zabuni/core": "workspace:*",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@types/node": "22.18.0",
     "postgres": "3.4.7",
+    "tsx": "4.20.5",
     "typescript": "5.9.2",
     "vitest": "3.2.4"
   }

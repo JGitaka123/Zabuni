@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { verifyRequestSession, type AuthServer, type MembershipRuntime } from "@zabuni/auth";
+import type { EmbeddingProvider } from "@zabuni/catalog";
 import { tenants, users, type TenantRuntime } from "@zabuni/db";
 import type { ErrorReporter, StructuredLogger } from "@zabuni/observability";
 import { and, eq } from "drizzle-orm";
@@ -14,6 +15,7 @@ export interface AppDependencies {
   readonly auth: AuthServer;
   readonly memberships: MembershipRuntime;
   readonly tenants: TenantRuntime;
+  readonly embeddingProvider?: EmbeddingProvider;
   readonly webOrigin: string;
   readonly telemetry?: {
     readonly logger: StructuredLogger;
