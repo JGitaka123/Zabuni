@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 
 import type { TenantDatabase } from "@zabuni/db";
+import { consumeCatalogRateLimit } from "@zabuni/db/privileged/catalog-matching";
 
 export type CatalogBudgetOperation = "alias" | "match";
 
@@ -13,47 +14,20 @@ export class CatalogRateLimitError extends Error {
 
 async function consumeWindow(
   database: TenantDatabase,
-  tenantId: string,
-  key: string,
-  limit: number
+  operation: CatalogBudgetOperation,
+  userId: string | null
 ): Promise<void> {
-  const rows = await database.execute<{ accepted: boolean }>(sql`
-    INSERT INTO catalog_match_rate_limits (
-      key, tenant_id, request_count, window_started_at
-    ) VALUES (
-      ${key}, ${tenantId}, 1, CURRENT_TIMESTAMP
-    )
-    ON CONFLICT (key) DO UPDATE SET
-      request_count = CASE
-        WHEN catalog_match_rate_limits.window_started_at <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
-          THEN 1
-        ELSE catalog_match_rate_limits.request_count + 1
-      END,
-      window_started_at = CASE
-        WHEN catalog_match_rate_limits.window_started_at <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
-          THEN CURRENT_TIMESTAMP
-        ELSE catalog_match_rate_limits.window_started_at
-      END
-    WHERE catalog_match_rate_limits.tenant_id = EXCLUDED.tenant_id
-      AND (
-        catalog_match_rate_limits.window_started_at <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
-        OR catalog_match_rate_limits.request_count < ${limit}
-      )
-    RETURNING true AS accepted
-  `);
-  if (rows[0]?.accepted !== true) throw new CatalogRateLimitError();
+  const accepted = await consumeCatalogRateLimit(database, { operation, userId });
+  if (!accepted) throw new CatalogRateLimitError();
 }
 
 export async function consumeCatalogRequestRate(
   database: TenantDatabase,
-  tenantId: string,
   userId: string,
   operation: CatalogBudgetOperation
 ): Promise<void> {
-  const userLimit = operation === "match" ? 30 : 20;
-  const tenantLimit = operation === "match" ? 300 : 200;
-  await consumeWindow(database, tenantId, `${tenantId}:${operation}:user:${userId}`, userLimit);
-  await consumeWindow(database, tenantId, `${tenantId}:${operation}:tenant`, tenantLimit);
+  await consumeWindow(database, operation, userId);
+  await consumeWindow(database, operation, null);
 }
 
 export async function acquireCatalogMatchConcurrency(

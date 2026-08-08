@@ -27,9 +27,29 @@ describe("forward-only migrations", () => {
       "0013_tax_classification_privileges.sql",
       "0014_tax_evidence_enforcement.sql",
       "0015_tax_evidence_preflight.sql",
-      "0016_catalog_matching.sql"
+      "0016_catalog_matching.sql",
+      "0017_catalog_rate_limit_boundary.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("moves catalog rate limiting behind a fixed privileged boundary", async () => {
+    const migrations = await readMigrations();
+    const boundary =
+      migrations.find(({ name }) => name === "0017_catalog_rate_limit_boundary.sql")?.sql ?? "";
+
+    expect(boundary).toContain("SECURITY DEFINER");
+    expect(boundary).toContain("SET search_path = pg_catalog, public, app");
+    expect(boundary).toContain("current_tenant_id := app.current_tenant_id()");
+    expect(boundary).toContain("p_operation NOT IN ('match', 'alias')");
+    expect(boundary).toContain("users_catalog_rate_limit_owner_read");
+    expect(boundary).toContain("USING (tenant_id = app.current_tenant_id())");
+    expect(boundary).toContain("WHERE tenant_id = current_tenant_id AND id = p_user_id");
+    expect(boundary).toContain("WHEN p_operation = 'match' AND p_user_id IS NOT NULL THEN 30");
+    expect(boundary).toContain("REVOKE INSERT, UPDATE ON catalog_match_rate_limits");
+    expect(boundary).toContain(
+      "GRANT EXECUTE ON FUNCTION app.consume_catalog_rate_limit(text, uuid)"
+    );
   });
 
   it("adds pgvector catalog embeddings and tenant aliases", async () => {

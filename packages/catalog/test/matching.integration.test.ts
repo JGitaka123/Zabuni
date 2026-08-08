@@ -212,16 +212,14 @@ describe("tenant catalog hybrid matcher", () => {
   });
 
   it("enforces shared request windows and two cross-connection match slots", async () => {
-    const rateUserId = createEntityId();
+    const rateUserId = userId;
     for (let request = 0; request < 30; request += 1) {
       await runtime.run(tenantId, (database) =>
-        consumeCatalogRequestRate(database, tenantId, rateUserId, "match")
+        consumeCatalogRequestRate(database, rateUserId, "match")
       );
     }
     await expect(
-      runtime.run(tenantId, (database) =>
-        consumeCatalogRequestRate(database, tenantId, rateUserId, "match")
-      )
+      runtime.run(tenantId, (database) => consumeCatalogRequestRate(database, rateUserId, "match"))
     ).rejects.toBeInstanceOf(CatalogRateLimitError);
     await admin`
       UPDATE catalog_match_rate_limits
@@ -229,9 +227,7 @@ describe("tenant catalog hybrid matcher", () => {
       WHERE key = ${`${tenantId}:match:user:${rateUserId}`}
     `;
     await expect(
-      runtime.run(tenantId, (database) =>
-        consumeCatalogRequestRate(database, tenantId, rateUserId, "match")
-      )
+      runtime.run(tenantId, (database) => consumeCatalogRequestRate(database, rateUserId, "match"))
     ).resolves.toBeUndefined();
 
     const concurrencyUserId = createEntityId();

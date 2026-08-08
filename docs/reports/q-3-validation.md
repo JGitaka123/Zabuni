@@ -19,6 +19,7 @@ The code is ready for review and integration. Q-3 is not formally accepted becau
 - Added bounded hybrid retrieval and deterministic scoring with component-level explanations, inactive-item exclusion, exact tenant-filtered vector ordering, and degraded lexical fallback.
 - Added explicit alias administration and confirmation workflows with role checks, atomic first-use behavior, controlled reassignment, case-insensitive uniqueness, and usage counting.
 - Added authenticated API routes with 4 KiB body limits, result caps, input validation, database-shared per-user/per-tenant rate controls, cross-instance concurrency limits, and bounded pagination.
+- Moved rate-counter mutation behind a tenant-validating, fixed-search-path database function and revoked direct application inserts and updates.
 - Added a reproducible fixture evaluation CLI that refreshes current vectors, records dataset/catalog checksums, and fails below 80%; it is intentionally not evidence of Safuney acceptance.
 - Updated local and CI PostgreSQL provisioning to include pgvector and updated Turbo environment forwarding so integration database overrides reach every workspace package.
 
@@ -29,11 +30,11 @@ All required repository gates passed offline:
 - `pnpm install --frozen-lockfile --offline` - lockfile current; all 9 workspace projects ready.
 - `pnpm typecheck` - 13/13 tasks passed.
 - `pnpm lint` - 8/8 tasks passed.
-- `pnpm test` - 143 tests passed across all 8 packages.
+- `pnpm test` - 145 tests passed across all 8 packages.
 - `pnpm build` - 8/8 production builds passed; the Next.js application compiled and generated all 7 static pages.
 - `git diff --check` - passed.
 
-The test suite includes 33 database tests, 38 catalog tests, and 20 API tests. Q-3 coverage exercises embedding validation and idempotency, stale/incompatible vectors, inactive items, deterministic ties, alias learning/reassignment/concurrency and quota boundaries, shared rate windows and concurrency slots, tenant isolation, forced RLS, cross-tenant references, role enforcement, malformed input, and provider-unavailable behavior.
+The test suite includes 35 database tests, 38 catalog tests, and 20 API tests. Q-3 coverage exercises embedding validation and idempotency, stale/incompatible vectors, inactive items, deterministic ties, alias learning/reassignment/concurrency and quota boundaries, shared rate windows and concurrency slots, privileged counter mutation, tenant isolation, forced RLS, cross-tenant references, role enforcement, malformed input, and provider-unavailable behavior.
 
 Local database verification used an isolated disposable PostgreSQL 16 container with pgvector 0.7.4 because the official committed image was not present in the offline cache. The committed local/CI configuration uses `pgvector/pgvector:0.8.1-pg16` and still needs the approved registry digest recorded before a production deployment.
 
@@ -65,6 +66,6 @@ Until items 1-3 are complete, the repository's order-of-work rule prevents Q-4 f
 
 ## Known non-blocking issues
 
-- The database application role has direct RLS-protected mutation grants on the matching and rate-counter tables. A future hardening task can replace writes with narrow fixed-search-path security-definer functions, but forced RLS, typed request paths, composite tenant keys, and the protected alias-quota trigger currently enforce the operative boundaries.
+- The database application role still has direct RLS-protected mutation grants on item aliases and embeddings. A future hardening task can replace those writes with narrow fixed-search-path security-definer functions, but forced RLS, typed request paths, composite tenant keys, and the protected alias-quota trigger currently enforce the operative boundaries.
 - The HNSW index is global. Exact tenant-filtered ordering protects correctness today, but larger multi-tenant scale should use partitioning or another tenant-aware ANN strategy before approximate search is enabled.
 - The Next.js build reports that its optional ESLint plugin is not detected in the shared ESLint configuration. Compilation, strict type checking, repository linting, and static generation still pass.

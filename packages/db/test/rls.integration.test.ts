@@ -9,6 +9,7 @@ import {
   authMemberships,
   catalogImportRows,
   catalogImports,
+  catalogMatchRateLimits,
   catalogTaxClassifications,
   incidents,
   itemAliases,
@@ -20,6 +21,7 @@ import {
   usageEvents,
   users
 } from "../src/schema.js";
+import { consumeCatalogRateLimit } from "../src/privileged/catalog-matching.js";
 import { withTenant } from "../src/tenant-context.js";
 
 const adminUrl =
@@ -360,6 +362,78 @@ describe("tenant RLS through Drizzle", () => {
         db.update(itemAliases).set({ hitCount: -1 }).where(eq(itemAliases.id, ids.itemAliasA))
       )
     ).rejects.toMatchObject({ cause: { code: "23514" } });
+  });
+
+  it("allows only the tenant-bound rate-limit function to mutate counters", async () => {
+    const key = `${tenantA}:match:user:${ids.userA}`;
+    const nonexistentUserId = createEntityId();
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(catalogMatchRateLimits).values({
+          key: `${tenantA}:direct`,
+          tenantId: tenantA,
+          requestCount: 1,
+          windowStartedAt: new Date()
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userA })
+      )
+    ).resolves.toBe(true);
+    await admin`
+      UPDATE catalog_match_rate_limits
+      SET request_count = 30
+      WHERE key = ${key}
+    `;
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userA })
+      )
+    ).resolves.toBe(false);
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "alias", userId: null })
+      )
+    ).resolves.toBe(true);
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .update(catalogMatchRateLimits)
+          .set({ requestCount: 1 })
+          .where(eq(catalogMatchRateLimits.key, key))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userB })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "alias", userId: nonexistentUserId })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, async (db) => {
+        await db.execute(sql`SELECT app.consume_catalog_rate_limit('other', NULL::uuid)`);
+      })
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, async (db) => {
+        await db.execute(sql`SELECT app.consume_catalog_rate_limit(NULL, NULL::uuid)`);
+      })
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    const [rateKeys] = await admin<{ keys: string[] }[]>`
+      SELECT array_agg(key ORDER BY key) AS keys
+      FROM catalog_match_rate_limits
+      WHERE tenant_id = ${tenantA}
+    `;
+    expect(rateKeys?.keys).toEqual([
+      `${tenantA}:alias:tenant`,
+      `${tenantA}:match:user:${ids.userA}`
+    ]);
   });
 
   it("keeps concurrent pooled transactions isolated", async () => {
@@ -768,14 +842,12 @@ describe("tenant RLS through Drizzle", () => {
     ]);
     expect(grants.filter(({ privilege }) => privilege === "UPDATE")).toEqual([
       { privilege: "UPDATE", tableName: "catalog_imports" },
-      { privilege: "UPDATE", tableName: "catalog_match_rate_limits" },
       { privilege: "UPDATE", tableName: "item_aliases" },
       { privilege: "UPDATE", tableName: "item_embeddings" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
       { privilege: "INSERT", tableName: "catalog_import_rows" },
       { privilege: "INSERT", tableName: "catalog_imports" },
-      { privilege: "INSERT", tableName: "catalog_match_rate_limits" },
       { privilege: "INSERT", tableName: "item_aliases" },
       { privilege: "INSERT", tableName: "item_embeddings" },
       { privilege: "INSERT", tableName: "usage_events" }

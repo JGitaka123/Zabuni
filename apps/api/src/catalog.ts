@@ -156,7 +156,7 @@ export function registerCatalogRoutes(
         return context.json({ error: "catalog_match_invalid" }, 400);
       }
       await dependencies.tenants.run(session.tenantId, (database) =>
-        consumeCatalogRequestRate(database, session.tenantId, session.userId, "match")
+        consumeCatalogRequestRate(database, session.userId, "match")
       );
       const result = await dependencies.tenants.run(session.tenantId, async (database) => {
         await acquireCatalogMatchConcurrency(database, session.tenantId, session.userId);
@@ -201,7 +201,7 @@ export function registerCatalogRoutes(
     }
     try {
       await dependencies.tenants.run(session.tenantId, (database) =>
-        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+        consumeCatalogRequestRate(database, session.userId, "alias")
       );
       const alias = await dependencies.tenants.run(session.tenantId, async (database) => {
         const matcher = new TenantCatalogMatcher(database, session.tenantId);
@@ -272,7 +272,7 @@ export function registerCatalogRoutes(
     }
     try {
       await dependencies.tenants.run(session.tenantId, (database) =>
-        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+        consumeCatalogRequestRate(database, session.userId, "alias")
       );
       const alias = await dependencies.tenants.run(session.tenantId, async (database) => {
         const matcher = new TenantCatalogMatcher(database, session.tenantId);
@@ -312,7 +312,7 @@ export function registerCatalogRoutes(
     let removed: boolean;
     try {
       await dependencies.tenants.run(session.tenantId, (database) =>
-        consumeCatalogRequestRate(database, session.tenantId, session.userId, "alias")
+        consumeCatalogRequestRate(database, session.userId, "alias")
       );
       removed = await dependencies.tenants.run(session.tenantId, async (database) => {
         const matcher = new TenantCatalogMatcher(database, session.tenantId);

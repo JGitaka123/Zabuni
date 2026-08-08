@@ -29,14 +29,14 @@ beforeAll(async () => {
            (${tenantB}, 'Meter Tenant B', 'foundation', 'active')
     ON CONFLICT (id) DO NOTHING
   `;
-});
+}, 30_000);
 
 afterAll(async () => {
   await admin`DELETE FROM tenants WHERE id IN (${tenantA}, ${tenantB})`;
   await runtime.close();
   await migrator.end();
   await admin.end();
-});
+}, 30_000);
 
 describe("tenant LLM metering", () => {
   it("records one offline event, deduplicates retries, and remains tenant isolated", async () => {
