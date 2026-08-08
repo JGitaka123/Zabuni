@@ -9,8 +9,11 @@ import {
   authMemberships,
   catalogImportRows,
   catalogImports,
+  catalogMatchRateLimits,
   catalogTaxClassifications,
   incidents,
+  itemAliases,
+  itemEmbeddings,
   items,
   outbox,
   tenantTableRegistry,
@@ -18,6 +21,7 @@ import {
   usageEvents,
   users
 } from "../src/schema.js";
+import { consumeCatalogRateLimit } from "../src/privileged/catalog-matching.js";
 import { withTenant } from "../src/tenant-context.js";
 
 const adminUrl =
@@ -43,6 +47,8 @@ const ids = {
   itemB: createEntityId(),
   itemTaxA: createEntityId(),
   itemTaxB: createEntityId(),
+  itemAliasA: createEntityId(),
+  itemAliasB: createEntityId(),
   catalogImportA: createEntityId(),
   catalogImportB: createEntityId(),
   catalogImportRowA: createEntityId(),
@@ -56,6 +62,8 @@ const ids = {
   incidentA: createEntityId(),
   incidentB: createEntityId()
 };
+const embeddingA = Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0));
+const embeddingB = Array.from({ length: 1024 }, (_, index) => (index === 1 ? 1 : 0));
 
 async function provisionRuntimeRole(): Promise<void> {
   await admin.unsafe(`
@@ -152,6 +160,22 @@ beforeAll(async () => {
     `;
   });
   await admin`
+    INSERT INTO item_embeddings (
+      item_id, tenant_id, embedding, normalized_text, content_hash, provider, model, model_version
+    ) VALUES (
+      ${ids.itemA}, ${tenantA}, ${JSON.stringify(embeddingA)}::vector, 'a item',
+      ${"a".repeat(64)}, 'fixture', 'deterministic', '1'
+    ), (
+      ${ids.itemB}, ${tenantB}, ${JSON.stringify(embeddingB)}::vector, 'b item',
+      ${"b".repeat(64)}, 'fixture', 'deterministic', '1'
+    )
+  `;
+  await admin`
+    INSERT INTO item_aliases (id, tenant_id, item_id, alias_text, source)
+    VALUES (${ids.itemAliasA}, ${tenantA}, ${ids.itemA}, 'A soap', 'human'),
+           (${ids.itemAliasB}, ${tenantB}, ${ids.itemB}, 'B soap', 'accepted_match')
+  `;
+  await admin`
     INSERT INTO catalog_imports (id, tenant_id, source_filename, total_rows, invalid_rows)
     VALUES (${ids.catalogImportA}, ${tenantA}, 'tenant-a.csv', 1, 1),
            (${ids.catalogImportB}, ${tenantB}, 'tenant-b.xlsx', 1, 0)
@@ -196,14 +220,14 @@ beforeAll(async () => {
     VALUES (${ids.incidentA}, ${tenantA}, ${ids.outboxA}, 'fixture', 'A incident'),
            (${ids.incidentB}, ${tenantB}, ${ids.outboxB}, 'fixture', 'B incident')
   `;
-});
+}, 30_000);
 
 afterAll(async () => {
   await admin`DELETE FROM tenants WHERE id IN (${tenantA}, ${tenantB})`;
   await app.client.end();
   await migrator.end();
   await admin.end();
-});
+}, 30_000);
 
 describe("tenant RLS through Drizzle", () => {
   it("isolates every tenant-owned table for tenant A", async () => {
@@ -214,6 +238,12 @@ describe("tenant RLS through Drizzle", () => {
         { id: ids.membershipA }
       ]);
       await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([{ id: ids.itemA }]);
+      await expect(
+        db.select({ itemId: itemEmbeddings.itemId }).from(itemEmbeddings)
+      ).resolves.toEqual([{ itemId: ids.itemA }]);
+      await expect(db.select({ id: itemAliases.id }).from(itemAliases)).resolves.toEqual([
+        { id: ids.itemAliasA }
+      ]);
       await expect(db.select({ id: catalogImports.id }).from(catalogImports)).resolves.toEqual([
         { id: ids.catalogImportA }
       ]);
@@ -256,7 +286,154 @@ describe("tenant RLS through Drizzle", () => {
       ).resolves.toEqual(
         expect.arrayContaining([{ id: ids.itemTaxB }, { id: ids.taxClassificationB }])
       );
+      await expect(
+        db.select().from(itemEmbeddings).where(eq(itemEmbeddings.itemId, ids.itemA))
+      ).resolves.toHaveLength(0);
+      await expect(
+        db.select().from(itemAliases).where(eq(itemAliases.id, ids.itemAliasA))
+      ).resolves.toHaveLength(0);
     });
+  });
+
+  it("allows tenant-scoped embedding upserts and alias management", async () => {
+    const aliasId = createEntityId();
+    await withTenant(app.db, tenantA, async (db) => {
+      await db
+        .insert(itemEmbeddings)
+        .values({
+          itemId: ids.itemA,
+          tenantId: tenantA,
+          embedding: embeddingB,
+          normalizedText: "a item refreshed",
+          contentHash: "c".repeat(64),
+          provider: "fixture",
+          model: "deterministic",
+          modelVersion: "2"
+        })
+        .onConflictDoUpdate({
+          target: itemEmbeddings.itemId,
+          set: {
+            embedding: embeddingB,
+            normalizedText: "a item refreshed",
+            contentHash: "c".repeat(64),
+            modelVersion: "2",
+            updatedAt: new Date()
+          }
+        });
+      await db.insert(itemAliases).values({
+        id: aliasId,
+        tenantId: tenantA,
+        itemId: ids.itemA,
+        aliasText: "A handwash",
+        source: "human"
+      });
+      await db
+        .update(itemAliases)
+        .set({ hitCount: 1, lastUsedAt: new Date() })
+        .where(eq(itemAliases.id, aliasId));
+      await expect(
+        db.select({ modelVersion: itemEmbeddings.modelVersion }).from(itemEmbeddings)
+      ).resolves.toEqual([{ modelVersion: "2" }]);
+      await expect(
+        db
+          .select({ hitCount: itemAliases.hitCount })
+          .from(itemAliases)
+          .where(eq(itemAliases.id, aliasId))
+      ).resolves.toEqual([{ hitCount: 1 }]);
+      await db.delete(itemAliases).where(eq(itemAliases.id, aliasId));
+      await db.delete(itemEmbeddings).where(eq(itemEmbeddings.itemId, ids.itemA));
+    });
+  });
+
+  it("enforces case-insensitive alias uniqueness and nonnegative usage", async () => {
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(itemAliases).values({
+          id: createEntityId(),
+          tenantId: tenantA,
+          itemId: ids.itemA,
+          aliasText: "a SOAP",
+          source: "human"
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.update(itemAliases).set({ hitCount: -1 }).where(eq(itemAliases.id, ids.itemAliasA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "23514" } });
+  });
+
+  it("allows only the tenant-bound rate-limit function to mutate counters", async () => {
+    const key = `${tenantA}:match:user:${ids.userA}`;
+    const nonexistentUserId = createEntityId();
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(catalogMatchRateLimits).values({
+          key: `${tenantA}:direct`,
+          tenantId: tenantA,
+          requestCount: 1,
+          windowStartedAt: new Date()
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userA })
+      )
+    ).resolves.toBe(true);
+    await admin`
+      UPDATE catalog_match_rate_limits
+      SET request_count = 30
+      WHERE key = ${key}
+    `;
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userA })
+      )
+    ).resolves.toBe(false);
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "alias", userId: null })
+      )
+    ).resolves.toBe(true);
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .update(catalogMatchRateLimits)
+          .set({ requestCount: 1 })
+          .where(eq(catalogMatchRateLimits.key, key))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "match", userId: ids.userB })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        consumeCatalogRateLimit(db, { operation: "alias", userId: nonexistentUserId })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, async (db) => {
+        await db.execute(sql`SELECT app.consume_catalog_rate_limit('other', NULL::uuid)`);
+      })
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, async (db) => {
+        await db.execute(sql`SELECT app.consume_catalog_rate_limit(NULL, NULL::uuid)`);
+      })
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    const [rateKeys] = await admin<{ keys: string[] }[]>`
+      SELECT array_agg(key ORDER BY key) AS keys
+      FROM catalog_match_rate_limits
+      WHERE tenant_id = ${tenantA}
+    `;
+    expect(rateKeys?.keys).toEqual([
+      `${tenantA}:alias:tenant`,
+      `${tenantA}:match:user:${ids.userA}`
+    ]);
   });
 
   it("keeps concurrent pooled transactions isolated", async () => {
@@ -311,6 +488,21 @@ describe("tenant RLS through Drizzle", () => {
           id: createEntityId(),
           tenantId: tenantB,
           sourceFilename: "forged.csv"
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.insert(itemEmbeddings).values({
+          itemId: ids.itemB,
+          tenantId: tenantB,
+          embedding: embeddingA,
+          normalizedText: "forged",
+          contentHash: "f".repeat(64),
+          provider: "fixture",
+          model: "deterministic",
+          modelVersion: "1"
         })
       )
     ).rejects.toMatchObject({ cause: { code: "42501" } });
@@ -389,10 +581,7 @@ describe("tenant RLS through Drizzle", () => {
     });
     await expect(
       withTenant(app.db, tenantA, (db) =>
-        db
-          .update(catalogImportRows)
-          .set({ sku: "TAMPERED" })
-          .where(eq(catalogImportRows.id, rowId))
+        db.update(catalogImportRows).set({ sku: "TAMPERED" }).where(eq(catalogImportRows.id, rowId))
       )
     ).rejects.toMatchObject({ cause: { code: "42501" } });
     await expect(
@@ -481,6 +670,13 @@ describe("tenant RLS through Drizzle", () => {
       admin`
         INSERT INTO incidents (id, tenant_id, outbox_id, kind, summary)
         VALUES (${createEntityId()}, ${tenantA}, ${ids.outboxB}, 'invalid', 'cross-tenant link')
+      `
+    ).rejects.toMatchObject({ code: "23503" });
+
+    await expect(
+      admin`
+        INSERT INTO item_aliases (id, tenant_id, item_id, alias_text, source)
+        VALUES (${createEntityId()}, ${tenantA}, ${ids.itemB}, 'cross-tenant alias', 'human')
       `
     ).rejects.toMatchObject({ code: "23503" });
 
@@ -640,14 +836,20 @@ describe("tenant RLS through Drizzle", () => {
       ORDER BY table_name, privilege_type
     `;
     expect(grants.filter(({ privilege }) => privilege === "DELETE")).toEqual([
-      { privilege: "DELETE", tableName: "catalog_imports" }
+      { privilege: "DELETE", tableName: "catalog_imports" },
+      { privilege: "DELETE", tableName: "item_aliases" },
+      { privilege: "DELETE", tableName: "item_embeddings" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "UPDATE")).toEqual([
-      { privilege: "UPDATE", tableName: "catalog_imports" }
+      { privilege: "UPDATE", tableName: "catalog_imports" },
+      { privilege: "UPDATE", tableName: "item_aliases" },
+      { privilege: "UPDATE", tableName: "item_embeddings" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
       { privilege: "INSERT", tableName: "catalog_import_rows" },
       { privilege: "INSERT", tableName: "catalog_imports" },
+      { privilege: "INSERT", tableName: "item_aliases" },
+      { privilege: "INSERT", tableName: "item_embeddings" },
       { privilege: "INSERT", tableName: "usage_events" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(

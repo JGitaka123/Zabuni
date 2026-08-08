@@ -1,5 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "DATABASE_ADMIN_URL",
+    "DATABASE_AUTH_URL",
+    "DATABASE_URL",
+    "DATABASE_WORKER_URL",
+    "MIGRATION_DATABASE_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

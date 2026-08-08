@@ -1,4 +1,5 @@
 import type { AuthServer, MembershipRuntime } from "@zabuni/auth";
+import { CatalogRateLimitError } from "@zabuni/catalog";
 import type { TenantRole, TenantRuntime } from "@zabuni/db";
 import { describe, expect, it, vi } from "vitest";
 
@@ -117,17 +118,14 @@ describe("catalog HTTP boundary", () => {
 
   it("keeps tax classification authority limited to owner and manager", async () => {
     const { app, run } = dependencies("finance");
-    const response = await app.request(
-      `/catalog/imports/${tenantId}/rows/2/tax-class`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          taxClass: "exempt",
-          basisNote: "Finance role must not be able to make this decision"
-        })
-      }
-    );
+    const response = await app.request(`/catalog/imports/${tenantId}/rows/2/tax-class`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taxClass: "exempt",
+        basisNote: "Finance role must not be able to make this decision"
+      })
+    });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "catalog_write_denied" });
     expect(run).not.toHaveBeenCalled();
@@ -135,14 +133,11 @@ describe("catalog HTTP boundary", () => {
 
   it("requires an exact tax class and nonblank classification basis", async () => {
     const { app, run } = dependencies("owner");
-    const response = await app.request(
-      `/catalog/imports/${tenantId}/rows/2/tax-class`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ taxClass: "16%", basisNote: "" })
-      }
-    );
+    const response = await app.request(`/catalog/imports/${tenantId}/rows/2/tax-class`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taxClass: "16%", basisNote: "" })
+    });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "catalog_classification_invalid" });
     expect(run).not.toHaveBeenCalled();
@@ -151,32 +146,156 @@ describe("catalog HTTP boundary", () => {
   it("maps wrapped stale classification decisions to a conflict", async () => {
     const { app, run } = dependencies("manager");
     run.mockRejectedValueOnce(new Error("classification failed", { cause: { code: "23514" } }));
-    const response = await app.request(
-      `/catalog/imports/${tenantId}/rows/2/tax-class`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          taxClass: "exempt",
-          basisNote: "Reviewed fixture evidence"
-        })
-      }
-    );
+    const response = await app.request(`/catalog/imports/${tenantId}/rows/2/tax-class`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taxClass: "exempt",
+        basisNote: "Reviewed fixture evidence"
+      })
+    });
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "catalog_classification_conflict" });
   });
 
   it("rejects malformed classification JSON without database access", async () => {
     const { app, run } = dependencies("owner");
-    const response = await app.request(
-      `/catalog/imports/${tenantId}/rows/2/tax-class`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: "{"
-      }
-    );
+    const response = await app.request(`/catalog/imports/${tenantId}/rows/2/tax-class`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{"
+    });
     expect(response.status).toBe(400);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed match requests before database access", async () => {
+    const { app, run } = dependencies("sales");
+    const response = await app.request("/catalog/matches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "", limit: 0 })
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_match_invalid" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("limits learned match corrections to sales, manager, and owner roles", async () => {
+    const { app, run } = dependencies("finance");
+    const response = await app.request("/catalog/matches/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "hand wash 5l", itemId: tenantId })
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "catalog_match_confirmation_denied"
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("restricts direct alias administration to owner and manager", async () => {
+    const { app, run } = dependencies("sales");
+    const response = await app.request("/catalog/aliases", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ itemId: tenantId, aliasText: "hand wash" })
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_write_denied" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a missing production embedding provider without touching the database", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request(`/catalog/items/${tenantId}/embedding`, {
+      method: "POST"
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "catalog_embedding_provider_unavailable"
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("returns an explainable successful match through the tenant boundary", async () => {
+    const { app, run } = dependencies("readonly");
+    (run as unknown as { mockResolvedValueOnce(value: unknown): void }).mockResolvedValueOnce(
+      undefined
+    );
+    (run as unknown as { mockResolvedValueOnce(value: unknown): void }).mockResolvedValueOnce({
+      normalizedQuery: "hand wash 5l",
+      matcherVersion: "hybrid-v1",
+      embedding: null,
+      candidates: [
+        {
+          itemId: tenantId,
+          sku: "HW-5L",
+          description: "Antibacterial hand soap",
+          method: "lexical",
+          score: { alias: 0, lexical: 0.8, pack: 1, unit: 0, vector: null, final: 0.19 },
+          degraded: true,
+          reasons: ["pack size agrees", "compatible current embedding unavailable"]
+        }
+      ]
+    });
+    const response = await app.request("/catalog/matches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "hand wash 5 litres", limit: 3 })
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as { readonly candidates?: readonly unknown[] };
+    expect(payload.candidates).toHaveLength(1);
+    expect(run).toHaveBeenCalledWith(tenantId, expect.any(Function));
+  });
+
+  it("returns a shared match rate-limit response", async () => {
+    const { app, run } = dependencies("sales");
+    run.mockRejectedValueOnce(new CatalogRateLimitError());
+    const response = await app.request("/catalog/matches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "hand wash 5 litres" })
+    });
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_match_rate_limited" });
+  });
+
+  it("allows a sales user to record a confirmed correction", async () => {
+    const { app, run } = dependencies("sales");
+    (run as unknown as { mockResolvedValueOnce(value: unknown): void }).mockResolvedValueOnce(
+      undefined
+    );
+    (run as unknown as { mockResolvedValueOnce(value: unknown): void }).mockResolvedValueOnce({
+      id: tenantId,
+      itemId: tenantId,
+      aliasText: "pink soap 5l",
+      source: "accepted_match",
+      hitCount: 1,
+      lastUsedAt: new Date("2026-08-07T00:00:00Z")
+    });
+    const response = await app.request("/catalog/matches/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "pink soap 5l", itemId: tenantId })
+    });
+    expect(response.status).toBe(201);
+    const payload = (await response.json()) as { readonly alias?: { readonly hitCount?: unknown } };
+    expect(payload.alias?.hitCount).toBe(1);
+    expect(run).toHaveBeenCalledWith(tenantId, expect.any(Function));
+  });
+
+  it("returns a shared alias-write rate-limit response", async () => {
+    const { app, run } = dependencies("sales");
+    run.mockRejectedValueOnce(new CatalogRateLimitError());
+    const response = await app.request("/catalog/matches/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "hand wash 5 litres", itemId: tenantId })
+    });
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_alias_rate_limited" });
   });
 });

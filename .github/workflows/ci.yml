@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+        image: pgvector/pgvector:0.8.1-pg16
         env:
           POSTGRES_DB: zabuni
           POSTGRES_USER: postgres
@@ -63,6 +63,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Provision database roles
         run: |
+          psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/03-pgvector.sql
           psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/00-roles.sql
           psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/01-auth-role.sql
           psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/local/postgres/02-worker-role.sql

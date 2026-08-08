@@ -27,6 +27,10 @@
     "./privileged/catalog-tax": {
       "types": "./dist/privileged/catalog-tax.d.ts",
       "import": "./dist/privileged/catalog-tax.js"
+    },
+    "./privileged/catalog-matching": {
+      "types": "./dist/privileged/catalog-matching.d.ts",
+      "import": "./dist/privileged/catalog-matching.js"
     }
   },
   "scripts": {

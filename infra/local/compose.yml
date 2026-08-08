@@ -1,16 +1,17 @@
 services:
   postgres:
-    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    image: pgvector/pgvector:0.8.1-pg16
     environment:
       POSTGRES_DB: zabuni
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./postgres/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
       - ./postgres/01-auth-role.sql:/docker-entrypoint-initdb.d/01-auth-role.sql:ro
       - ./postgres/02-worker-role.sql:/docker-entrypoint-initdb.d/02-worker-role.sql:ro
+      - ./postgres/03-pgvector.sql:/docker-entrypoint-initdb.d/03-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d zabuni"]
       interval: 2s
@@ -21,7 +22,7 @@ services:
     command:
       ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

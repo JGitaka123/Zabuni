@@ -12,7 +12,8 @@ import {
   text,
   timestamp,
   uniqueIndex,
-  uuid
+  uuid,
+  vector
 } from "drizzle-orm/pg-core";
 
 export const tenantRoles = ["owner", "manager", "sales", "finance", "readonly"] as const;
@@ -31,6 +32,9 @@ export const taxClassificationSources = [
   "import_human"
 ] as const;
 export type TaxClassificationSource = (typeof taxClassificationSources)[number];
+
+export const aliasSources = ["human", "accepted_match"] as const;
+export type AliasSource = (typeof aliasSources)[number];
 
 export const usageMetrics = [
   "rfq_parsed",
@@ -325,6 +329,122 @@ export const items = pgTable(
       "items_min_margin_bps_check",
       sql`${table.minMarginBps} IS NULL OR ${table.minMarginBps} BETWEEN 0 AND 10000`
     )
+  ]
+);
+
+export const itemEmbeddings = pgTable(
+  "item_embeddings",
+  {
+    itemId: uuid("item_id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    normalizedText: text("normalized_text").notNull(),
+    contentHash: text("content_hash").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    modelVersion: text("model_version").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [items.tenantId, items.id],
+      name: "item_embeddings_tenant_item_fk"
+    }).onDelete("cascade"),
+    uniqueIndex("item_embeddings_tenant_item_unique").on(table.tenantId, table.itemId),
+    index("item_embeddings_embedding_hnsw_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops")
+    ),
+    check("item_embeddings_normalized_text_not_blank", sql`btrim(${table.normalizedText}) <> ''`),
+    check(
+      "item_embeddings_normalized_text_length_check",
+      sql`char_length(${table.normalizedText}) <= 1000`
+    ),
+    check("item_embeddings_content_hash_check", sql`${table.contentHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "item_embeddings_provider_check",
+      sql`btrim(${table.provider}) <> '' AND char_length(${table.provider}) <= 100`
+    ),
+    check(
+      "item_embeddings_model_check",
+      sql`btrim(${table.model}) <> '' AND char_length(${table.model}) <= 100`
+    ),
+    check(
+      "item_embeddings_model_version_check",
+      sql`btrim(${table.modelVersion}) <> '' AND char_length(${table.modelVersion}) <= 100`
+    )
+  ]
+);
+
+export const itemAliases = pgTable(
+  "item_aliases",
+  {
+    id: uuid("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    aliasText: text("alias_text").notNull(),
+    source: text("source").$type<AliasSource>().notNull(),
+    hitCount: integer("hit_count").notNull().default(0),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true, mode: "date" }),
+    createdAt: createdAt()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [items.tenantId, items.id],
+      name: "item_aliases_tenant_item_fk"
+    }).onDelete("cascade"),
+    uniqueIndex("item_aliases_tenant_id_id_unique").on(table.tenantId, table.id),
+    uniqueIndex("item_aliases_tenant_alias_casefold_unique").on(
+      table.tenantId,
+      sql`lower(${table.aliasText})`
+    ),
+    index("item_aliases_tenant_item_idx").on(table.tenantId, table.itemId),
+    check(
+      "item_aliases_alias_text_check",
+      sql`btrim(${table.aliasText}) <> '' AND char_length(${table.aliasText}) <= 1000`
+    ),
+    check("item_aliases_source_check", sql`${table.source} IN ('human', 'accepted_match')`),
+    check("item_aliases_hit_count_nonnegative_check", sql`${table.hitCount} >= 0`)
+  ]
+);
+
+export const catalogMatchRateLimits = pgTable(
+  "catalog_match_rate_limits",
+  {
+    key: text("key").primaryKey(),
+    tenantId: uuid("tenant_id").notNull(),
+    requestCount: integer("request_count").notNull(),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true, mode: "date" }).notNull()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "catalog_match_rate_limits_tenant_id_fkey"
+    }).onDelete("cascade"),
+    check(
+      "catalog_match_rate_limits_key_check",
+      sql`btrim(${table.key}) <> '' AND char_length(${table.key}) <= 150`
+    ),
+    check("catalog_match_rate_limits_count_check", sql`${table.requestCount} BETWEEN 1 AND 1000`)
+  ]
+);
+
+export const catalogAliasQuotas = pgTable(
+  "catalog_alias_quotas",
+  {
+    tenantId: uuid("tenant_id").primaryKey(),
+    aliasCount: integer("alias_count").notNull()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.tenantId],
+      foreignColumns: [tenants.id],
+      name: "catalog_alias_quotas_tenant_id_fkey"
+    }).onDelete("cascade"),
+    check("catalog_alias_quotas_count_check", sql`${table.aliasCount} BETWEEN 0 AND 10000`)
   ]
 );
 
@@ -691,6 +811,10 @@ export const schema = {
   authMemberships,
   authOnboardingAudit,
   items,
+  itemEmbeddings,
+  itemAliases,
+  catalogAliasQuotas,
+  catalogMatchRateLimits,
   catalogImports,
   catalogImportRows,
   catalogTaxClassifications,
@@ -704,6 +828,14 @@ export const tenantTableRegistry = [
   { scopeColumn: "tenant_id", sqlName: "users", table: users },
   { scopeColumn: "tenant_id", sqlName: "auth_membership", table: authMemberships },
   { scopeColumn: "tenant_id", sqlName: "items", table: items },
+  { scopeColumn: "tenant_id", sqlName: "item_embeddings", table: itemEmbeddings },
+  { scopeColumn: "tenant_id", sqlName: "item_aliases", table: itemAliases },
+  { scopeColumn: "tenant_id", sqlName: "catalog_alias_quotas", table: catalogAliasQuotas },
+  {
+    scopeColumn: "tenant_id",
+    sqlName: "catalog_match_rate_limits",
+    table: catalogMatchRateLimits
+  },
   { scopeColumn: "tenant_id", sqlName: "catalog_imports", table: catalogImports },
   { scopeColumn: "tenant_id", sqlName: "catalog_import_rows", table: catalogImportRows },
   {
