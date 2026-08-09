@@ -12,7 +12,7 @@ The Phase 0 completion report listed these as the engineering gaps to close befo
 
 ## Defects found and fixed
 
-Three of these were live defects, not missing features.
+Four of these were live defects, not missing features. The fourth was found after the first merge, when it turned CI red on `main`.
 
 ### 1. Production could boot with fixture transports
 
@@ -28,21 +28,33 @@ An unrecognised value was equally unsafe: `INTEGRATION_MODE=fixtrue` silently di
 
 ESLint flat config **replaces** a rule's options when a later block sets the same rule; it does not merge them. Because the broader `apps/**` block came last, it overwrote the narrower one, and the `@zabuni/db/privileged/outbox` restriction never applied to anything. Request-path code could import the cross-tenant outbox boundary with no lint error — verified directly before the fix.
 
-That guard exists to enforce non-negotiable 1 (never use a service-role connection in request-path code). The blocks are now ordered narrowest-last and the request-path block restates every path it needs. `apps/api/test/import-boundaries.test.ts` asserts the *resolved* rule options for representative files in each app, so a future reordering fails a test rather than silently disarming the boundary.
+That guard exists to enforce non-negotiable 1 (never use a service-role connection in request-path code). The blocks are now ordered narrowest-last and the request-path block restates every path it needs. `apps/api/test/import-boundaries.test.ts` asserts the _resolved_ rule options for representative files in each app, so a future reordering fails a test rather than silently disarming the boundary.
 
 ### 3. The stall check never ran on a freshly started worker
 
 Caught by its own test during development: the drain loop's stall sampler compared `now() - lastStallCheck` against the interval with `lastStallCheck` initialised to `0`, which suppressed the first sample. A worker starting up into an already-stalled queue would have stayed silent for a full interval. It now initialises to `Number.NEGATIVE_INFINITY` so the first iteration always samples.
 
+### 4. Concurrent role provisioning raced migrations in CI
+
+Found after the first merge: `main` went red with `PostgresError: tuple concurrently updated` in `rls.integration.test.ts`'s `beforeAll`, even though the identical tree had passed on the pull request. A flake, not a content difference.
+
+Roles are cluster-wide, and Turbo runs each package's tests as a separate process against one database. The `CREATE ROLE`/`ALTER ROLE`/`GRANT` block in the `packages/db` tests therefore raced the `GRANT`, `REVOKE`, and `ALTER FUNCTION ... OWNER TO` statements inside `applyMigrations` running in `packages/catalog` or `packages/observability`. Two sessions updating the same `pg_authid` tuple fail outright. The CI log shows the collision across two distinct backend PIDs.
+
+`applyMigrations` already serialises on `pg_advisory_xact_lock(hashtext('zabuni:migrations'))`; the test provisioning did not take it. Both provisioning functions now do.
+
+Confirmed causally rather than by a passing run: 180 concurrent role-DDL statements produced 21 `tuple concurrently updated` errors without the lock, and zero with it.
+
+This race predates this work — it needed only two packages doing cluster-wide DDL at once — but the added test file shifted timing enough to expose it.
+
 ## Delivered scope
 
-| Gap | Outcome | Evidence |
-| --- | --- | --- |
-| 5 | Fail-closed `loadApiConfig`/`loadWorkerConfig`; executable worker entry point with poll loop, error backoff and cooperative shutdown; SIGTERM/SIGINT handling and pool draining in the API; database readiness gate at boot; `/ready` probe; `start` scripts for all three apps | 17 config tests, 10 loop tests, 4 readiness tests |
-| 6 | Fault injection proving `app.fail_outbox` rolls back atomically when the incident insert fails | `outbox.integration.test.ts` |
-| 7 | Migration `0018` exposes an aggregate-only stall snapshot; the loop alerts once per episode on exhausted leases and warns on merely-expired ones | 3 loop tests, 2 integration tests |
-| 9 | Next.js ESLint plugin wired in and verified firing; `no-html-link-for-pages` disabled for this App Router-only project | `next build` no longer warns |
-| 11 | Migration checksum-mutation test; full tenant-B RLS matrix; cross-tenant update/delete proven to affect no rows | 3 migration-ledger tests, extended RLS suite |
+| Gap | Outcome                                                                                                                                                                                                                                                                         | Evidence                                          |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| 5   | Fail-closed `loadApiConfig`/`loadWorkerConfig`; executable worker entry point with poll loop, error backoff and cooperative shutdown; SIGTERM/SIGINT handling and pool draining in the API; database readiness gate at boot; `/ready` probe; `start` scripts for all three apps | 17 config tests, 10 loop tests, 4 readiness tests |
+| 6   | Fault injection proving `app.fail_outbox` rolls back atomically when the incident insert fails                                                                                                                                                                                  | `outbox.integration.test.ts`                      |
+| 7   | Migration `0018` exposes an aggregate-only stall snapshot; the loop alerts once per episode on exhausted leases and warns on merely-expired ones                                                                                                                                | 3 loop tests, 2 integration tests                 |
+| 9   | Next.js ESLint plugin wired in and verified firing; `no-html-link-for-pages` disabled for this App Router-only project                                                                                                                                                          | `next build` no longer warns                      |
+| 11  | Migration checksum-mutation test; full tenant-B RLS matrix; cross-tenant update/delete proven to affect no rows                                                                                                                                                                 | 3 migration-ledger tests, extended RLS suite      |
 
 ### Crash-loop visibility (gap 7)
 
@@ -60,13 +72,13 @@ The drain marks any claim with no registered handler as a permanent failure and 
 
 Run against PostgreSQL 16 with pgvector, `INTEGRATION_MODE=fixture`, no network.
 
-| Command | Result |
-| --- | --- |
-| `pnpm install --frozen-lockfile` | Passed |
-| `pnpm typecheck` | Passed; 13/13 tasks |
-| `pnpm lint` | Passed; 8/8 tasks |
-| `pnpm test` | Passed; 187 tests across 8 packages (was 145) |
-| `pnpm build` | Passed; 8/8 tasks, no Next.js plugin warning |
+| Command                          | Result                                        |
+| -------------------------------- | --------------------------------------------- |
+| `pnpm install --frozen-lockfile` | Passed                                        |
+| `pnpm typecheck`                 | Passed; 13/13 tasks                           |
+| `pnpm lint`                      | Passed; 8/8 tasks                             |
+| `pnpm test`                      | Passed; 187 tests across 8 packages (was 145) |
+| `pnpm build`                     | Passed; 8/8 tasks, no Next.js plugin warning  |
 
 The 42 added tests are 17 config, 10 worker loop, 4 readiness, 3 import-boundary, 3 migration-ledger, 3 outbox stall/fault-injection, and 2 migration-content assertions. No test contacts an external service.
 
