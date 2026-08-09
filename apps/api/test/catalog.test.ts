@@ -32,6 +32,7 @@ function dependencies(role: TenantRole) {
         expiresAt: new Date("2099-01-01T00:00:00Z")
       }),
     provision: () => Promise.reject(new Error("not used")),
+    ping: () => Promise.resolve(),
     close: () => Promise.resolve()
   } satisfies MembershipRuntime;
   const tenants = { run, close: () => Promise.resolve() } as unknown as TenantRuntime;

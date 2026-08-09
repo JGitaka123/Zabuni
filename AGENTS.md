@@ -22,6 +22,8 @@ Read `CLAUDE.md` in full. It is the authoritative version. This file adds Codex-
 
 **Migrations are forward-only.** Never edit a migration that already exists. Add a new one.
 
+**Configuration is fail-closed.** Read the environment through `loadApiConfig`/`loadWorkerConfig` in `packages/core/config.ts`, never `process.env` in service code. A service with a bad environment refuses to boot rather than degrading — a fixture transport in production accepts every send and delivers nothing. See `CLAUDE.md` for the full rule.
+
 **Ask instead of guessing.** If a spec is ambiguous on tax treatment, pricing precedence, dunning tone, or anything a tenant sends to their own customer, stop and ask. Do not resolve ambiguity by picking something reasonable and shipping it. Those four areas carry legal or reputational cost that a code review will not catch.
 
 **Stay in scope.** One task ID per PR. If you find an unrelated bug, note it in the PR description — do not fix it in the same change.

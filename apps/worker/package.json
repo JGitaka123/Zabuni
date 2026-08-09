@@ -9,9 +9,11 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
   },
   "dependencies": {
+    "@zabuni/core": "workspace:*",
     "@zabuni/db": "workspace:*",
     "@zabuni/observability": "workspace:*"
   },

@@ -97,6 +97,8 @@ export interface MembershipRuntime {
   readonly provision: (
     input: ProvisionTenantInput
   ) => Promise<Pick<TenantSession, "tenantId" | "userId" | "role">>;
+  /** Round-trips a trivial query so readiness probes reflect real connectivity. */
+  readonly ping: () => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
@@ -106,6 +108,9 @@ export function createMembershipRuntime(connectionString: string): MembershipRun
   return {
     resolve: (session) => resolveTenantSession(connection.db, session),
     provision: (input) => provisionFirstTenant(connection.db, input),
+    ping: async () => {
+      await connection.db.execute(sql`SELECT 1`);
+    },
     close: () => connection.client.end()
   };
 }

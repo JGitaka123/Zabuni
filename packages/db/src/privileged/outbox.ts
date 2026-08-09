@@ -24,6 +24,14 @@ export interface OutboxFailure {
   readonly retryDelaySeconds: number;
 }
 
+/** Aggregate-only view of leases that expired without acknowledgement. */
+export interface OutboxStallSnapshot {
+  readonly expiredLeases: number;
+  /** Expired leases that have already burned every attempt — the crash-loop signal. */
+  readonly exhaustedLeases: number;
+  readonly oldestExpiredSeconds: number;
+}
+
 export interface OutboxWorkerStore {
   readonly claim: (
     workerId: string,
@@ -32,6 +40,8 @@ export interface OutboxWorkerStore {
   ) => Promise<readonly ClaimedOutboxRow[]>;
   readonly markSent: (claim: ClaimedOutboxRow, resultRef: string) => Promise<boolean>;
   readonly markFailed: (claim: ClaimedOutboxRow, failure: OutboxFailure) => Promise<boolean>;
+  readonly stallSnapshot: (expiredGraceSeconds?: number) => Promise<OutboxStallSnapshot>;
+  readonly ping: () => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
@@ -66,6 +76,36 @@ export function createOutboxWorkerStore(connectionString: string): OutboxWorkerS
 
   return {
     close: () => connection.client.end(),
+    ping: async () => {
+      await connection.db.execute(sql`SELECT 1`);
+    },
+    stallSnapshot: async (expiredGraceSeconds = 0) => {
+      if (
+        !Number.isInteger(expiredGraceSeconds) ||
+        expiredGraceSeconds < 0 ||
+        expiredGraceSeconds > 3_600
+      ) {
+        throw new Error("Expired grace must be an integer between 0 and 3600");
+      }
+      const [row] = await connection.db.execute<{
+        expiredLeases: string | number;
+        exhaustedLeases: string | number;
+        oldestExpiredSeconds: number;
+      }>(sql`
+        SELECT expired_leases AS "expiredLeases",
+               exhausted_leases AS "exhaustedLeases",
+               oldest_expired_seconds AS "oldestExpiredSeconds"
+        FROM app.outbox_stall_snapshot(${expiredGraceSeconds})
+      `);
+      return {
+        // bigint arrives as a string from postgres-js; counts here are far below
+        // Number.MAX_SAFE_INTEGER, so a plain conversion is exact.
+        expiredLeases: Number(row?.expiredLeases ?? 0),
+        exhaustedLeases: Number(row?.exhaustedLeases ?? 0),
+        // Already an integer column, so it arrives as a number.
+        oldestExpiredSeconds: row?.oldestExpiredSeconds ?? 0
+      };
+    },
     claim: async (workerId, batchSize = 1, leaseSeconds = 60) => {
       if (!Number.isInteger(batchSize) || batchSize !== 1) {
         throw new Error("Outbox claim batch size must remain 1 until lease renewal is implemented");

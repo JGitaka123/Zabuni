@@ -252,6 +252,94 @@ describe("Postgres outbox worker boundary", () => {
     ).rejects.toMatchObject({ code: "42501" });
   });
 
+  it("rolls the failure transition back atomically when the incident cannot be written", async () => {
+    const id = await enqueue(tenantB, `incident-conflict-${createEntityId()}`, 1);
+    const [claim] = await store.claim("worker-incident-conflict", 1, 60);
+    if (claim === undefined) throw new Error("expected claim");
+
+    // Fault injection: occupy the (tenant_id, outbox_id) unique slot so the
+    // incident INSERT inside app.fail_outbox raises. The whole transition must
+    // roll back -- a row marked failed_permanent with no incident would be a
+    // silently dropped delivery, which invariant 4 forbids.
+    await admin`
+      INSERT INTO incidents (id, tenant_id, outbox_id, kind, summary, status)
+      VALUES (${createEntityId()}, ${tenantB}, ${id}, 'preexisting', 'Occupies the slot', 'open')
+    `;
+
+    await expect(
+      store.markFailed(claim, {
+        errorCode: "permanent_rejection",
+        permanent: true,
+        retryDelaySeconds: 0
+      })
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
+
+    // The row must still be claimed and processing, not stranded in a terminal
+    // state, so the lease can expire and a healthy worker can retry it.
+    const [row] = await admin<
+      { state: string; claimedBy: string | null; attemptCount: number; terminalAt: Date | null }[]
+    >`
+      SELECT state, claimed_by AS "claimedBy", attempt_count AS "attemptCount",
+             terminal_at AS "terminalAt"
+      FROM outbox WHERE id = ${id}
+    `;
+    expect(row?.state).toBe("processing");
+    expect(row?.claimedBy).toBe("worker-incident-conflict");
+    expect(row?.terminalAt).toBeNull();
+
+    const [incidentCount] = await admin<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM incidents WHERE outbox_id = ${id}
+    `;
+    expect(incidentCount?.count).toBe(1);
+
+    await admin`DELETE FROM incidents WHERE outbox_id = ${id}`;
+    await admin`
+      UPDATE outbox
+      SET state = 'sent', terminal_at = now(), claimed_at = NULL,
+          claim_expires_at = NULL, claimed_by = NULL, claim_token = NULL
+      WHERE id = ${id}
+    `;
+  });
+
+  it("reports stalled leases as an aggregate snapshot without leaking tenant data", async () => {
+    await expect(store.stallSnapshot()).resolves.toEqual({
+      expiredLeases: 0,
+      exhaustedLeases: 0,
+      oldestExpiredSeconds: 0
+    });
+
+    const id = await enqueue(tenantA, `stalled-${createEntityId()}`, 1);
+    const [claim] = await store.claim("worker-stalled", 1, 60);
+    if (claim === undefined) throw new Error("expected claim");
+
+    // Simulate a worker that died after the external effect: the lease expired
+    // while the row still has no attempts left, so claim_outbox will reclaim it
+    // forever without ever making progress.
+    await admin`
+      UPDATE outbox SET claim_expires_at = now() - interval '120 seconds' WHERE id = ${id}
+    `;
+
+    const snapshot = await store.stallSnapshot();
+    expect(snapshot.expiredLeases).toBe(1);
+    expect(snapshot.exhaustedLeases).toBe(1);
+    expect(snapshot.oldestExpiredSeconds).toBeGreaterThanOrEqual(120);
+
+    // A grace window longer than the expiry hides the not-yet-worrying case.
+    await expect(store.stallSnapshot(3_600)).resolves.toMatchObject({ expiredLeases: 0 });
+
+    await admin`
+      UPDATE outbox
+      SET state = 'sent', terminal_at = now(), claimed_at = NULL,
+          claim_expires_at = NULL, claimed_by = NULL, claim_token = NULL
+      WHERE id = ${id}
+    `;
+  });
+
+  it("rejects an out-of-range stall grace before reaching the database", async () => {
+    await expect(store.stallSnapshot(-1)).rejects.toThrow("between 0 and 3600");
+    await expect(store.stallSnapshot(3_601)).rejects.toThrow("between 0 and 3600");
+  });
+
   it("recovers every expired processing row so none remains stuck", async () => {
     const ids = await Promise.all([
       enqueue(tenantA, `recover-a-${createEntityId()}`),

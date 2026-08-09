@@ -44,9 +44,11 @@ That is a legally-forced, deadline-shaped, high-anxiety purchase trigger. It is 
 
 ## Status
 
-Phase 0 foundation is complete on the `codex/phase-0` branch. Safuney Limited is design partner zero — a real hygiene/PPE distributor with real receivables. Phase 1 ships to Safuney only after the external prerequisites and milestone decisions in the completion report are resolved.
+Phase 0 (F-1 … F-7) and Phase 1 tasks Q-1, Q-2 and Q-3 are merged to `main`. Safuney Limited is design partner zero — a real hygiene/PPE distributor with real receivables. Phase 1 ships to Safuney only after the external prerequisites and milestone decisions in the completion report are resolved.
 
-See [`docs/reports/phase-0-completion.md`](./docs/reports/phase-0-completion.md) for verification evidence, design decisions, and the prioritized gap register.
+Q-4 is **not** started: Q-3 is engineering-complete but not formally accepted, because the ≥80% top-1 accuracy gate needs a held-out Safuney RFQ set that does not exist in this repository. See [`docs/reports/q-3-validation.md`](./docs/reports/q-3-validation.md).
+
+See [`docs/reports/phase-0-completion.md`](./docs/reports/phase-0-completion.md) for verification evidence, design decisions, and the prioritized gap register, and [`docs/reports/foundation-hardening.md`](./docs/reports/foundation-hardening.md) for the operability and configuration work that closed part of it.
 
 ## Local foundation setup
 
@@ -67,6 +69,24 @@ All development and tests default to `INTEGRATION_MODE=fixture`; no external int
 ```powershell
 docker compose -f infra/local/compose.yml down
 ```
+
+## Running the services
+
+```powershell
+pnpm --filter @zabuni/db db:migrate    # apply migrations
+pnpm --filter @zabuni/api dev          # HTTP API on :3001
+pnpm --filter @zabuni/web dev          # dashboard on :3000
+pnpm --filter @zabuni/worker dev       # outbox drain
+```
+
+Each app also has a production `start` script that runs the compiled output from `pnpm build`.
+
+Two behaviours are deliberate and will look like failures if you are not expecting them:
+
+- **Configuration is fail-closed.** Services validate their whole environment at boot and refuse to start on any problem, reporting every one at once. Production specifically rejects `INTEGRATION_MODE=fixture`, non-https origins, and the placeholder auth secret.
+- **The worker exits immediately with `worker_no_handlers_registered`.** No outbox delivery handler exists yet — the first is eTIMS transmission in E-3 — and the drain treats an unhandled event as a permanent failure. Booting an empty worker against a real queue would fail every pending delivery, so it refuses instead.
+
+The API exposes `/health` for liveness (never touches the database, so an outage cannot restart-loop a healthy process) and `/ready` for readiness (round-trips the database and returns 503 when it is unreachable).
 
 ## Name
 
