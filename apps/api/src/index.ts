@@ -6,52 +6,94 @@ import {
   UnconfiguredOtpTransport
 } from "@zabuni/auth";
 import { FixtureEmbeddingProvider } from "@zabuni/catalog";
+import { loadApiConfig } from "@zabuni/core";
 import { createTenantRuntime } from "@zabuni/db";
 import { createPinoStructuredLogger, initializeNodeSentry } from "@zabuni/observability";
 
 import { createApp } from "./app.js";
 
-const port = Number.parseInt(process.env.PORT ?? "3001", 10);
-const environment = process.env.NODE_ENV ?? "development";
-const logger = createPinoStructuredLogger({ service: "api", environment });
+// Fail closed: an invalid environment aborts the boot before anything listens.
+// In particular this refuses to start production with fixture transports, which
+// accept every OTP send and deliver nothing.
+const config = loadApiConfig();
+
+const logger = createPinoStructuredLogger({ service: "api", environment: config.environment });
 const errors = initializeNodeSentry({
-  environment,
-  integrationMode: process.env.INTEGRATION_MODE === "live" ? "live" : "fixture",
-  ...(process.env.SENTRY_DSN === undefined ? {} : { dsn: process.env.SENTRY_DSN })
+  environment: config.environment,
+  integrationMode: config.integrationMode === "live" ? "live" : "fixture",
+  ...(config.sentryDsn === undefined ? {} : { dsn: config.sentryDsn })
 });
-const databaseUrl = process.env.DATABASE_URL;
-const authDatabaseUrl = process.env.DATABASE_AUTH_URL;
-const authSecret = process.env.BETTER_AUTH_SECRET;
-const apiOrigin = process.env.BETTER_AUTH_URL ?? `http://localhost:${String(port)}`;
-const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
-if (databaseUrl === undefined || authDatabaseUrl === undefined || authSecret === undefined) {
-  throw new Error("DATABASE_URL, DATABASE_AUTH_URL, and BETTER_AUTH_SECRET are required");
-}
 
-const integrationMode = process.env.INTEGRATION_MODE ?? "fixture";
-const embeddingProvider =
-  integrationMode === "fixture" ? new FixtureEmbeddingProvider() : undefined;
-const otpTransport =
-  integrationMode === "fixture" ? new FixtureOtpTransport() : new UnconfiguredOtpTransport();
-const authRuntime = createAuthRuntime(authDatabaseUrl, {
-  secret: authSecret,
-  baseURL: apiOrigin,
-  trustedOrigins: [webOrigin],
+const embeddingProvider = config.useFixtures ? new FixtureEmbeddingProvider() : undefined;
+const otpTransport = config.useFixtures
+  ? new FixtureOtpTransport()
+  : new UnconfiguredOtpTransport();
+
+const authRuntime = createAuthRuntime(config.authDatabaseUrl, {
+  secret: config.authSecret,
+  baseURL: config.apiOrigin,
+  trustedOrigins: [config.webOrigin],
   otpTransport,
-  production: process.env.NODE_ENV === "production"
+  production: config.environment === "production"
 });
-const memberships = createMembershipRuntime(databaseUrl);
-const tenantRuntime = createTenantRuntime(databaseUrl);
+const memberships = createMembershipRuntime(config.databaseUrl);
+const tenantRuntime = createTenantRuntime(config.databaseUrl);
 
-serve({
+const server = serve({
   fetch: createApp({
     auth: authRuntime.auth,
     memberships,
     tenants: tenantRuntime,
     ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
-    webOrigin,
+    readiness: () => memberships.ping(),
+    webOrigin: config.webOrigin,
     telemetry: { logger, errors }
   }).fetch,
-  port
+  port: config.port
 });
-logger.info("service_started", { correlationId: "startup" }, { port });
+
+logger.info(
+  "service_started",
+  { correlationId: "startup" },
+  { port: config.port, environment: config.environment, integrationMode: config.integrationMode }
+);
+
+const SHUTDOWN_GRACE_MS = 15_000;
+let shuttingDown = false;
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info("service_shutdown_requested", { correlationId: "shutdown" }, { signal });
+
+  // Backstop: a hung in-flight request must not block the deploy forever.
+  const forceExit = setTimeout(() => {
+    logger.error(
+      "service_shutdown_timed_out",
+      { correlationId: "shutdown" },
+      {
+        graceMs: SHUTDOWN_GRACE_MS
+      }
+    );
+    process.exit(1);
+  }, SHUTDOWN_GRACE_MS);
+  forceExit.unref();
+
+  // Stop accepting connections first, then release pools once in-flight
+  // requests have drained, so no request loses its database mid-flight.
+  server.close(() => {
+    void Promise.allSettled([authRuntime.close(), memberships.close(), tenantRuntime.close()]).then(
+      () => {
+        logger.info("service_stopped", { correlationId: "shutdown" }, { signal });
+        process.exitCode = 0;
+      }
+    );
+  });
+}
+
+process.on("SIGTERM", () => {
+  shutdown("SIGTERM");
+});
+process.on("SIGINT", () => {
+  shutdown("SIGINT");
+});

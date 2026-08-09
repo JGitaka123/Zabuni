@@ -16,6 +16,8 @@ export interface AppDependencies {
   readonly memberships: MembershipRuntime;
   readonly tenants: TenantRuntime;
   readonly embeddingProvider?: EmbeddingProvider;
+  /** Resolves when dependencies are usable; rejects to fail the readiness probe. */
+  readonly readiness?: () => Promise<void>;
   readonly webOrigin: string;
   readonly telemetry?: {
     readonly logger: StructuredLogger;
@@ -25,8 +27,24 @@ export interface AppDependencies {
 
 export function createApp(dependencies?: AppDependencies): Hono<{ Variables: SessionVariables }> {
   const app = new Hono<{ Variables: SessionVariables }>();
+  // Liveness: the process is up. Deliberately free of dependency checks so a
+  // database blip cannot cause an orchestrator to restart-loop a healthy process.
   app.get("/health", (context) => context.json({ status: "ok" }));
   if (dependencies === undefined) return app;
+
+  const readiness = dependencies.readiness;
+  if (readiness !== undefined) {
+    // Readiness: safe to route traffic here. A failure sheds load instead of
+    // serving requests that would fail at the database.
+    app.get("/ready", async (context) => {
+      try {
+        await readiness();
+        return context.json({ status: "ready" });
+      } catch {
+        return context.json({ status: "unready" }, 503);
+      }
+    });
+  }
 
   if (dependencies.telemetry !== undefined) {
     const telemetry = dependencies.telemetry;

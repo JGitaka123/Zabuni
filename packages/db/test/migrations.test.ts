@@ -28,9 +28,34 @@ describe("forward-only migrations", () => {
       "0014_tax_evidence_enforcement.sql",
       "0015_tax_evidence_preflight.sql",
       "0016_catalog_matching.sql",
-      "0017_catalog_rate_limit_boundary.sql"
+      "0017_catalog_rate_limit_boundary.sql",
+      "0018_outbox_stall_visibility.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("exposes outbox stall telemetry as an aggregate-only privileged function", async () => {
+    const migrations = await readMigrations();
+    const stall =
+      migrations.find(({ name }) => name === "0018_outbox_stall_visibility.sql")?.sql ?? "";
+
+    expect(stall).toContain("SECURITY DEFINER");
+    expect(stall).toContain("SET search_path = pg_catalog");
+    expect(stall).toContain("OWNER TO zabuni_outbox_claim_owner");
+    expect(stall).toContain("GRANT EXECUTE ON FUNCTION app.outbox_stall_snapshot(integer)");
+    expect(stall).toContain("REVOKE CREATE ON SCHEMA app FROM zabuni_outbox_claim_owner");
+    // The snapshot must stay aggregate-only: no tenant identifiers, payloads, or
+    // error text may cross the boundary to a globally-scoped worker. Comments are
+    // stripped so prose about the rule cannot satisfy or break the check.
+    const statements = stall
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n");
+    expect(statements).toContain("RETURNS TABLE");
+    expect(statements).not.toContain("tenant_id");
+    expect(statements).not.toContain("payload");
+    expect(statements).not.toContain("last_error");
+    expect(statements).not.toContain("idempotency_key");
   });
 
   it("moves catalog rate limiting behind a fixed privileged boundary", async () => {

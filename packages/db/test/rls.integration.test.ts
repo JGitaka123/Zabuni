@@ -273,10 +273,22 @@ describe("tenant RLS through Drizzle", () => {
 
   it("mirrors isolation for tenant B", async () => {
     await withTenant(app.db, tenantB, async (db) => {
-      const rows = await db.select().from(items);
-      expect(rows.map(({ id }) => id)).toEqual([ids.itemB]);
+      // The full matrix, mirroring tenant A table for table, so isolation is
+      // proven symmetrically rather than for one representative tenant.
+      await expect(db.select({ id: tenants.id }).from(tenants)).resolves.toEqual([{ id: tenantB }]);
+      await expect(db.select({ id: users.id }).from(users)).resolves.toEqual([{ id: ids.userB }]);
       await expect(db.select({ id: authMemberships.id }).from(authMemberships)).resolves.toEqual([
         { id: ids.membershipB }
+      ]);
+      await expect(db.select({ id: items.id }).from(items)).resolves.toEqual([{ id: ids.itemB }]);
+      await expect(
+        db.select({ itemId: itemEmbeddings.itemId }).from(itemEmbeddings)
+      ).resolves.toEqual([{ itemId: ids.itemB }]);
+      await expect(db.select({ id: itemAliases.id }).from(itemAliases)).resolves.toEqual([
+        { id: ids.itemAliasB }
+      ]);
+      await expect(db.select({ id: catalogImports.id }).from(catalogImports)).resolves.toEqual([
+        { id: ids.catalogImportB }
       ]);
       await expect(
         db.select({ id: catalogImportRows.id }).from(catalogImportRows)
@@ -286,12 +298,72 @@ describe("tenant RLS through Drizzle", () => {
       ).resolves.toEqual(
         expect.arrayContaining([{ id: ids.itemTaxB }, { id: ids.taxClassificationB }])
       );
+      await expect(db.select({ id: usageEvents.id }).from(usageEvents)).resolves.toEqual([
+        { id: ids.usageB }
+      ]);
+      await expect(db.select({ id: outbox.id }).from(outbox)).resolves.toEqual([
+        { id: ids.outboxB }
+      ]);
+      await expect(db.select({ id: incidents.id }).from(incidents)).resolves.toEqual([
+        { id: ids.incidentB }
+      ]);
       await expect(
         db.select().from(itemEmbeddings).where(eq(itemEmbeddings.itemId, ids.itemA))
       ).resolves.toHaveLength(0);
       await expect(
         db.select().from(itemAliases).where(eq(itemAliases.id, ids.itemAliasA))
       ).resolves.toHaveLength(0);
+    });
+  });
+
+  it("makes cross-tenant updates and deletes affect no rows", async () => {
+    // RLS filters the USING clause rather than raising, so a cross-tenant write
+    // is silently a no-op. Proving zero rows changed is the only way to show the
+    // neighbouring tenant's data survived intact.
+    await withTenant(app.db, tenantA, async (db) => {
+      const updatedItems = await db
+        .update(items)
+        .set({ description: "hijacked" })
+        .where(eq(items.id, ids.itemB));
+      expect(updatedItems.count).toBe(0);
+
+      const deletedAliases = await db.delete(itemAliases).where(eq(itemAliases.id, ids.itemAliasB));
+      expect(deletedAliases.count).toBe(0);
+
+      const deletedImports = await db
+        .delete(catalogImports)
+        .where(eq(catalogImports.id, ids.catalogImportB));
+      expect(deletedImports.count).toBe(0);
+    });
+
+    // users is SELECT-only for the app role, so a cross-tenant update is refused
+    // by grants before RLS is even consulted -- a strictly stronger boundary.
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.update(users).set({ name: "hijacked" }).where(eq(users.id, ids.userB))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+
+    // Tenant B's rows are byte-for-byte unchanged.
+    await withTenant(app.db, tenantB, async (db) => {
+      await expect(
+        db.select({ description: items.description }).from(items).where(eq(items.id, ids.itemB))
+      ).resolves.toEqual([{ description: "B item" }]);
+      await expect(
+        db.select({ name: users.name }).from(users).where(eq(users.id, ids.userB))
+      ).resolves.toEqual([{ name: "B User" }]);
+      await expect(
+        db
+          .select({ id: itemAliases.id })
+          .from(itemAliases)
+          .where(eq(itemAliases.id, ids.itemAliasB))
+      ).resolves.toEqual([{ id: ids.itemAliasB }]);
+      await expect(
+        db
+          .select({ id: catalogImports.id })
+          .from(catalogImports)
+          .where(eq(catalogImports.id, ids.catalogImportB))
+      ).resolves.toEqual([{ id: ids.catalogImportB }]);
     });
   });
 

@@ -46,7 +46,7 @@ These are correctness requirements, not preferences. Violating any of them is a 
 apps/web         Next.js dashboard
 apps/api         Hono HTTP API
 apps/worker      BullMQ consumers, agent runtimes, schedulers
-packages/core    Money, dates, redaction, shared types
+packages/core    Money, dates, redaction, fail-closed config, shared types
 packages/db      Drizzle schema, migrations, RLS policies
 packages/agents  Agent definitions, tools, evaluators
 packages/etims   KRA eTIMS client (VSCU/OSCU)
@@ -60,6 +60,8 @@ packages/wa      WhatsApp Cloud API client
 - Every external integration has a recorded-fixture test mode. `INTEGRATION_MODE=fixture|sandbox|live`.
 - Migrations are forward-only. Never edit a shipped migration.
 - Timezone is `Africa/Nairobi` for all business-day logic. Store UTC.
+- Configuration is fail-closed. Read the environment only through `loadApiConfig`/`loadWorkerConfig` in `packages/core/config.ts`, never `process.env` in service code. A service with a bad environment must refuse to boot, not degrade. Production may not run in `fixture` mode: fixture transports accept every send and deliver nothing.
+- ESLint flat config **replaces** a rule's options rather than merging them. When two blocks set the same rule, the narrower one must come last and restate everything it needs. This silently disarmed the cross-tenant outbox import guard once already.
 
 **Testing**
 - Vitest. Unit tests for pricing, tax, money, dunning policy — these are the parts where a bug costs the customer money or legal exposure.

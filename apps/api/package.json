@@ -9,11 +9,13 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@zabuni/catalog": "workspace:*",
     "@zabuni/auth": "workspace:*",
+    "@zabuni/core": "workspace:*",
     "@zabuni/db": "workspace:*",
     "@zabuni/observability": "workspace:*",
     "@hono/node-server": "1.19.1",
@@ -22,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "22.18.0",
+    "eslint": "9.34.0",
     "tsx": "4.20.5",
     "typescript": "5.9.2",
     "vitest": "3.2.4"

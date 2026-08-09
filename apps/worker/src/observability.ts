@@ -12,13 +12,14 @@ export interface WorkerObservability {
 
 export function createWorkerObservability(
   environment: string,
-  sentryDsn?: string
+  sentryDsn?: string,
+  integrationMode: string = process.env.INTEGRATION_MODE ?? "fixture"
 ): WorkerObservability {
   return {
     logger: createPinoStructuredLogger({ service: "worker", environment }),
     errors: initializeNodeSentry({
       environment,
-      integrationMode: process.env.INTEGRATION_MODE === "live" ? "live" : "fixture",
+      integrationMode: integrationMode === "live" ? "live" : "fixture",
       ...(sentryDsn === undefined ? {} : { dsn: sentryDsn })
     })
   };
