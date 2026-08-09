@@ -65,8 +65,18 @@ const ids = {
 const embeddingA = Array.from({ length: 1024 }, (_, index) => (index === 0 ? 1 : 0));
 const embeddingB = Array.from({ length: 1024 }, (_, index) => (index === 1 ? 1 : 0));
 
+/**
+ * Roles are cluster-wide, and Turbo runs each package's tests in a separate
+ * process against this one database. Provisioning here therefore races the
+ * GRANT/REVOKE/ALTER FUNCTION statements inside applyMigrations running in
+ * another package, and two sessions updating the same pg_authid tuple fail with
+ * "tuple concurrently updated". Taking the same advisory lock applyMigrations
+ * uses serialises all cluster-wide DDL across every test process.
+ */
 async function provisionRuntimeRole(): Promise<void> {
-  await admin.unsafe(`
+  await admin.begin(async (transaction) => {
+    await transaction`SELECT pg_advisory_xact_lock(hashtext('zabuni:migrations'))`;
+    await transaction.unsafe(`
     DO $roles$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zabuni_owner') THEN
@@ -114,6 +124,7 @@ async function provisionRuntimeRole(): Promise<void> {
     GRANT USAGE ON SCHEMA public TO zabuni_auth;
     GRANT USAGE ON SCHEMA public TO zabuni_outbox_claim_owner, zabuni_worker;
   `);
+  });
 }
 
 beforeAll(async () => {

@@ -23,8 +23,15 @@ const store = createOutboxWorkerStore(workerUrl);
 const tenantA = createEntityId();
 const tenantB = createEntityId();
 
+/**
+ * Serialised against applyMigrations with the same advisory lock: roles are
+ * cluster-wide, so this races the GRANT/REVOKE statements inside migrations
+ * running in another package's test process. See rls.integration.test.ts.
+ */
 async function provisionWorkerRoles(): Promise<void> {
-  await admin.unsafe(`
+  await admin.begin(async (transaction) => {
+    await transaction`SELECT pg_advisory_xact_lock(hashtext('zabuni:migrations'))`;
+    await transaction.unsafe(`
     DO $roles$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'zabuni_owner') THEN
@@ -62,6 +69,7 @@ async function provisionWorkerRoles(): Promise<void> {
     GRANT USAGE, CREATE ON SCHEMA public TO zabuni_owner;
     GRANT USAGE ON SCHEMA public TO zabuni_migrator, zabuni_app, zabuni_auth, zabuni_outbox_claim_owner, zabuni_worker;
   `);
+  });
 }
 
 async function enqueue(tenantId: string, key: string, maxAttempts = 3): Promise<string> {
