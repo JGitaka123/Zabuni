@@ -36,12 +36,13 @@ These are correctness requirements, not preferences. Violating any of them is a 
 - **Queue:** BullMQ on Redis (Upstash)
 - **Storage:** Cloudflare R2 (S3-compatible)
 - **LLM:** Anthropic SDK. Sonnet for extraction and drafting, Haiku for classification and routing.
-- **Auth:** better-auth, phone-first (SMS OTP) with email fallback
+- **Auth:** better-auth, email one-time codes. Phone/SMS sign-in was removed: Better Auth's phone plugin has no hash-at-rest option and stores the live code in plaintext. Email OTP uses `storeOTP: "hashed"`.
 - **Errors:** Sentry. **Logs:** structured JSON to Betterstack.
 
 ## Conventions
 
 **Structure**
+
 ```
 apps/web         Next.js dashboard
 apps/api         Hono HTTP API
@@ -55,6 +56,7 @@ packages/wa      WhatsApp Cloud API client
 ```
 
 **Code**
+
 - Handlers are thin. Business logic lives in `packages/*` services and is unit-testable without HTTP.
 - All external calls go through a typed client in `packages/*` with retry, timeout, and circuit-breaker. Never `fetch` a third party directly from a route or worker.
 - Every external integration has a recorded-fixture test mode. `INTEGRATION_MODE=fixture|sandbox|live`.
@@ -64,11 +66,13 @@ packages/wa      WhatsApp Cloud API client
 - ESLint flat config **replaces** a rule's options rather than merging them. When two blocks set the same rule, the narrower one must come last and restate everything it needs. This silently disarmed the cross-tenant outbox import guard once already.
 
 **Testing**
+
 - Vitest. Unit tests for pricing, tax, money, dunning policy — these are the parts where a bug costs the customer money or legal exposure.
 - Integration tests run against fixtures by default, sandbox in CI nightly.
 - Any change to pricing, tax classification, or dunning escalation requires a test demonstrating the new behaviour. No exceptions.
 
 **Git**
+
 - Conventional commits.
 - One phase task per PR. Reference the task ID from `docs/08-build-plan.md`.
 

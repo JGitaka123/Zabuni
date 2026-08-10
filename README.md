@@ -70,6 +70,10 @@ All development and tests default to `INTEGRATION_MODE=fixture`; no external int
 docker compose -f infra/local/compose.yml down
 ```
 
+## Handing this to a design partner
+
+[`docs/handover-safuney.md`](./docs/handover-safuney.md) is the tester-facing guide: setup, how to sign in without a mail provider, what is worth testing, and what is deliberately not built yet. The most recent acceptance run is in [`docs/reports/acceptance-2026-08-10.md`](./docs/reports/acceptance-2026-08-10.md).
+
 ## Running the services
 
 ```powershell
@@ -85,6 +89,8 @@ Two behaviours are deliberate and will look like failures if you are not expecti
 
 - **Configuration is fail-closed.** Services validate their whole environment at boot and refuse to start on any problem, reporting every one at once. Production specifically rejects `INTEGRATION_MODE=fixture`, non-https origins, and the placeholder auth secret.
 - **The worker exits immediately with `worker_no_handlers_registered`.** No outbox delivery handler exists yet — the first is eTIMS transmission in E-3 — and the drain treats an unhandled event as a permanent failure. Booting an empty worker against a real queue would fail every pending delivery, so it refuses instead.
+
+Sign-in uses an email one-time code. In fixture mode there is no mail provider, so codes are appended to `fixture-otp.jsonl` in the repository root; the database only ever stores a hash. Production refuses to boot in fixture mode, so that file cannot exist there.
 
 The API exposes `/health` for liveness (never touches the database, so an outage cannot restart-loop a healthy process) and `/ready` for readiness (round-trips the database and returns 503 when it is unreachable).
 

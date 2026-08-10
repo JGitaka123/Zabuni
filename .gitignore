@@ -10,3 +10,6 @@ coverage/
 *.log
 .DS_Store
 
+
+# Fixture OTP mailbox (local sign-in codes, fixture mode only)
+fixture-otp.jsonl
