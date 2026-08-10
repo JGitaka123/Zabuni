@@ -115,6 +115,17 @@ button:disabled {
   opacity: 0.55;
 }
 
+/* Secondary action that reads as a link, e.g. "use a different address". */
+button.link {
+  background: none;
+  border: none;
+  padding: 0.25rem 0;
+  color: #2f6f4f;
+  text-decoration: underline;
+  font: inherit;
+  width: auto;
+}
+
 @media (max-width: 42rem) {
   .mapping-grid {
     grid-template-columns: 1fr;

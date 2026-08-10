@@ -1,33 +1,44 @@
 import type { EmailOtpPurpose, OtpTransport } from "./otp-transport.js";
 
 export type FixtureOtpDelivery = Readonly<{
-  channel: "email" | "phone";
   recipient: string;
   code: string;
-  purpose?: EmailOtpPurpose;
+  purpose: EmailOtpPurpose;
 }>;
 
-/** In-memory delivery sink for local/test use. It performs no I/O and never logs PII. */
+/**
+ * Observer for fixture deliveries.
+ *
+ * Codes are stored hashed, so there is no way to recover one from the database.
+ * A local tester therefore needs some channel to read the code back. The API
+ * wires this to a file mailbox in fixture mode only; production refuses to boot
+ * in fixture mode at all, so this can never be reachable there.
+ */
+export type FixtureOtpSink = (delivery: FixtureOtpDelivery) => void;
+
+/** In-memory delivery sink for local/test use. It performs no network I/O. */
 export class FixtureOtpTransport implements OtpTransport {
   readonly #deliveries: FixtureOtpDelivery[] = [];
+  readonly #sink: FixtureOtpSink | undefined;
 
-  sendPhoneOtp(phoneNumber: string, code: string): Promise<void> {
-    this.#deliveries.push({ channel: "phone", recipient: phoneNumber, code });
-    return Promise.resolve();
+  constructor(sink?: FixtureOtpSink) {
+    this.#sink = sink;
   }
 
   sendEmailOtp(email: string, code: string, purpose: EmailOtpPurpose): Promise<void> {
-    this.#deliveries.push({ channel: "email", recipient: email, code, purpose });
+    const delivery: FixtureOtpDelivery = { recipient: email, code, purpose };
+    this.#deliveries.push(delivery);
+    // A failing local mailbox must not break sign-in during testing.
+    try {
+      this.#sink?.(delivery);
+    } catch {
+      /* the in-memory record above remains authoritative */
+    }
     return Promise.resolve();
   }
 
-  latest(
-    channel: FixtureOtpDelivery["channel"],
-    recipient: string
-  ): FixtureOtpDelivery | undefined {
-    return this.#deliveries.findLast(
-      (delivery) => delivery.channel === channel && delivery.recipient === recipient
-    );
+  latest(recipient: string): FixtureOtpDelivery | undefined {
+    return this.#deliveries.findLast((delivery) => delivery.recipient === recipient);
   }
 
   clear(): void {

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   authAccounts,
   authIdentities,
@@ -11,7 +9,7 @@ import {
 import { createDatabase, type Database } from "@zabuni/db/admin";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { emailOTP, phoneNumber } from "better-auth/plugins";
+import { emailOTP } from "better-auth/plugins";
 
 import type { OtpTransport } from "./otp-transport.js";
 
@@ -24,11 +22,6 @@ export interface AuthServerOptions {
   readonly trustedOrigins: readonly string[];
   readonly otpTransport: OtpTransport;
   readonly production?: boolean;
-}
-
-function temporaryPhoneEmail(phone: string): string {
-  const digest = createHash("sha256").update(phone).digest("hex");
-  return `${digest}@phone.invalid`;
 }
 
 export function createAuthServer(options: AuthServerOptions) {
@@ -62,6 +55,11 @@ export function createAuthServer(options: AuthServerOptions) {
     advanced: {
       useSecureCookies: options.production === true,
       cookiePrefix: "zabuni",
+      // The API resolves the caller and always sets this header. Reading the
+      // default x-forwarded-for instead would mean no header on a direct
+      // connection, and Better Auth skips rate limiting when it cannot resolve
+      // an address -- which silently disabled every limit configured below.
+      ipAddress: { ipAddressHeaders: ["x-zabuni-client-ip"] },
       database: { generateId: () => createEntityId() },
       defaultCookieAttributes: {
         httpOnly: true,
@@ -71,19 +69,6 @@ export function createAuthServer(options: AuthServerOptions) {
       }
     },
     plugins: [
-      phoneNumber({
-        otpLength: 6,
-        expiresIn: FIVE_MINUTES_SECONDS,
-        allowedAttempts: 3,
-        requireVerification: true,
-        phoneNumberValidator: (value) => /^\+[1-9]\d{7,14}$/.test(value),
-        sendOTP: ({ phoneNumber: destination, code }) =>
-          options.otpTransport.sendPhoneOtp(destination, code),
-        signUpOnVerification: {
-          getTempEmail: temporaryPhoneEmail,
-          getTempName: () => "Zabuni user"
-        }
-      }),
       emailOTP({
         otpLength: 6,
         expiresIn: FIVE_MINUTES_SECONDS,

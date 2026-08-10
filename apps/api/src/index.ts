@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+
 import { serve } from "@hono/node-server";
 import {
   createAuthRuntime,
@@ -29,8 +31,18 @@ const errors = initializeNodeSentry({
 });
 
 const embeddingProvider = config.useFixtures ? new FixtureEmbeddingProvider() : undefined;
+// Email codes are stored hashed, so a local tester cannot recover one from the
+// database. In fixture mode only, deliveries are appended to a file mailbox so
+// sign-in is completable without an email provider. Production cannot reach
+// this branch: loadApiConfig refuses to boot production in fixture mode.
 const otpTransport = config.useFixtures
-  ? new FixtureOtpTransport()
+  ? new FixtureOtpTransport((delivery) => {
+      appendFileSync(
+        config.fixtureOtpMailbox,
+        `${JSON.stringify({ ...delivery, sentAt: new Date().toISOString() })}\n`,
+        "utf8"
+      );
+    })
   : new UnconfiguredOtpTransport();
 
 const authRuntime = createAuthRuntime(config.authDatabaseUrl, {
@@ -51,6 +63,9 @@ const server = serve(
       tenants: tenantRuntime,
       ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
       readiness: () => memberships.ping(),
+      ...(config.trustedProxyIpHeader === undefined
+        ? {}
+        : { trustedProxyIpHeader: config.trustedProxyIpHeader }),
       webOrigin: config.webOrigin,
       telemetry: { logger, errors }
     }).fetch,
