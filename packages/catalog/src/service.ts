@@ -252,34 +252,34 @@ export class TenantCatalogService {
 
     if (preview.rows.length > 0) {
       const stagedValues = preview.rows.map((row) => {
-          const validationErrors =
-            row.kind === "valid"
-              ? []
-              : row.issues.map((problem) => `${problem.code}:${problem.field ?? "row"}`);
-          const value = row.kind === "rejected" ? undefined : row.value;
-          return {
-            id: createEntityId(),
-            tenantId: this.#tenantId,
-            importId,
-            rowNumber: row.rowNumber,
-            rawData: { ...row.source },
-            sku: value?.sku ?? null,
-            description: value?.description ?? null,
-            brand: value?.brand ?? null,
-            packSize: value?.packSize ?? null,
-            uom: value?.uom ?? null,
-            costMinor: value?.costMinor === undefined ? null : BigInt(value.costMinor),
-            costCurrency: value?.costCurrency ?? null,
-            fxBufferBps: value?.fxBufferBps ?? null,
-            taxClass: row.kind === "valid" ? row.value.taxClass : null,
-            kraItemCode: value?.kraItemCode ?? null,
-            hsCode: value?.hsCode ?? null,
-            leadTimeDays: value?.leadTimeDays ?? null,
-            minMarginBps: value?.minMarginBps ?? null,
-            active: value?.active ?? null,
-            validationErrors
-          };
-        });
+        const validationErrors =
+          row.kind === "valid"
+            ? []
+            : row.issues.map((problem) => `${problem.code}:${problem.field ?? "row"}`);
+        const value = row.kind === "rejected" ? undefined : row.value;
+        return {
+          id: createEntityId(),
+          tenantId: this.#tenantId,
+          importId,
+          rowNumber: row.rowNumber,
+          rawData: { ...row.source },
+          sku: value?.sku ?? null,
+          description: value?.description ?? null,
+          brand: value?.brand ?? null,
+          packSize: value?.packSize ?? null,
+          uom: value?.uom ?? null,
+          costMinor: value?.costMinor === undefined ? null : BigInt(value.costMinor),
+          costCurrency: value?.costCurrency ?? null,
+          fxBufferBps: value?.fxBufferBps ?? null,
+          taxClass: row.kind === "valid" ? row.value.taxClass : null,
+          kraItemCode: value?.kraItemCode ?? null,
+          hsCode: value?.hsCode ?? null,
+          leadTimeDays: value?.leadTimeDays ?? null,
+          minMarginBps: value?.minMarginBps ?? null,
+          active: value?.active ?? null,
+          validationErrors
+        };
+      });
       await this.#database.insert(catalogImportRows).values(stagedValues);
       const fileClassifications = stagedValues.filter(
         (row): row is typeof row & { taxClass: TaxClass } => row.taxClass !== null
@@ -351,7 +351,20 @@ export class TenantCatalogService {
       .where(and(eq(catalogImports.tenantId, this.#tenantId), eq(catalogImports.id, importId)))
       .for("update")
       .limit(1);
-    if (catalogImport === undefined) throw new Error("Catalog import was not found");
+    if (catalogImport === undefined) {
+      // A committed import is deliberately immutable: the RLS update policy is
+      // USING (status = 'staged'), so FOR UPDATE cannot lock it and the lock
+      // above returns nothing. Without this read a second commit -- a rep
+      // double-clicking -- would report "not found" and look like data loss.
+      // Read without locking to tell "already committed" from "never existed".
+      const [existing] = await this.#database
+        .select({ status: catalogImports.status })
+        .from(catalogImports)
+        .where(and(eq(catalogImports.tenantId, this.#tenantId), eq(catalogImports.id, importId)))
+        .limit(1);
+      if (existing === undefined) throw new Error("Catalog import was not found");
+      throw new Error(`Catalog import is not staged (status ${existing.status})`);
+    }
     if (catalogImport.status !== "staged") throw new Error("Catalog import is not staged");
     if (catalogImport.invalidRows !== 0 || catalogImport.validRows !== catalogImport.totalRows) {
       throw new Error("Catalog import contains invalid or unclassified rows");

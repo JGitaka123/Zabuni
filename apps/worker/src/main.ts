@@ -1,4 +1,5 @@
 import { loadWorkerConfig } from "@zabuni/core";
+import { installFatalHandlers } from "@zabuni/observability";
 
 import { OutboxDrainLoop, waitForDatabase } from "./loop.js";
 import { createWorkerObservability } from "./observability.js";
@@ -45,6 +46,17 @@ export async function main(): Promise<number> {
     },
     telemetry
   );
+
+  // A crash mid-delivery must be visible: the row stays claimed until its lease
+  // expires, and without this the only trace is a raw stack on stderr.
+  installFatalHandlers({
+    logger: telemetry.logger,
+    errors: telemetry.errors,
+    correlationId: config.workerId,
+    onFatal: () => {
+      void loop.stop();
+    }
+  });
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {

@@ -342,4 +342,36 @@ describe("tenant catalog persistence", () => {
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
   });
+
+  it("reports an already-committed import as not staged rather than missing", async () => {
+    const preview = previewImport(
+      parseCsv(Buffer.from("sku,description,tax\nCAT-RECOMMIT-1,Recommit fixture,exempt\n")),
+      { sku: "sku", description: "description", taxClass: "tax" }
+    );
+    const staged = await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      return catalog.stageImport("recommit.csv", preview, userA);
+    });
+    await runtime.run(tenantA, async (database) => {
+      const catalog = new TenantCatalogService(database, tenantA);
+      return catalog.commitStagedImport(staged.id);
+    });
+
+    // A committed import is immutable, so the FOR UPDATE lock finds nothing.
+    // Reporting that as "not found" made a double-click look like data loss.
+    await expect(
+      runtime.run(tenantA, async (database) => {
+        const catalog = new TenantCatalogService(database, tenantA);
+        return catalog.commitStagedImport(staged.id);
+      })
+    ).rejects.toThrow(/not staged/u);
+
+    // A genuinely absent import still reports as missing.
+    await expect(
+      runtime.run(tenantA, async (database) => {
+        const catalog = new TenantCatalogService(database, tenantA);
+        return catalog.commitStagedImport(createEntityId());
+      })
+    ).rejects.toThrow(/not found/u);
+  });
 });
