@@ -105,7 +105,7 @@ Two defects surfaced that no unit test could have caught.
 
 ### Bind failures were invisible
 
-`service_started` was logged immediately after `serve()`, but binding is asynchronous. A port conflict therefore logged "service_started" and _then_ died on an unhandled `'error'` event, printing a raw stack that reached neither Sentry nor the structured log stream. Observed directly: a false `service_started`, followed by an `EADDRINUSE` stack trace.
+`service_started` was logged immediately after `serve()`, but binding is asynchronous. A port conflict therefore logged "service*started" and \_then* died on an unhandled `'error'` event, printing a raw stack that reached neither Sentry nor the structured log stream. Observed directly: a false `service_started`, followed by an `EADDRINUSE` stack trace.
 
 The listening callback now reports the started event, and a bind error is captured and logged as `service_listen_failed` with its `code` before a non-zero exit.
 
@@ -122,3 +122,13 @@ Confirmed live rather than inferred — a sent code was read straight out of `au
 Better Auth's `emailOTP` plugin supports `storeOTP: "hashed" | "plain" | "encrypted"`. Its `phoneNumber` plugin supports no such option and compares the submitted code against the stored string directly. This is unchanged in the latest release (1.6.26, checked against the published tarball), so an upgrade does not fix it.
 
 Closing it means implementing hash-at-rest around the framework's phone flow. That is an authentication-critical change whose failure mode is account takeover, so it is left as an explicit owner decision rather than resolved unilaterally. It remains gap-register item 2 and a pre-production blocker.
+
+### Re-committing an import reported it as missing
+
+Driving the Q-1 import flow surfaced a third defect. Committing an import a second time returned `catalog_import_not_found` (404) instead of reporting that it was already committed.
+
+The cause is a correct security rule with a wrong error path. Committed imports are immutable: the RLS policy on `catalog_imports` is `USING (status = 'staged')` for update, so the `SELECT ... FOR UPDATE` that opens `commitStagedImport` cannot lock a committed row and returns nothing. The service read that as "was not found".
+
+A rep who double-clicks Commit was therefore told the import did not exist, which reads as data loss immediately after a successful import. The lock now falls back to an unlocked read to distinguish the two cases: an existing import reports `not staged` (409) and a genuinely absent one still reports `not found` (404). The immutability guarantee is untouched -- the fallback never attempts to lock the committed row.
+
+Confirmed live against the running API: 409 for the already-committed import, 404 for an absent id.
