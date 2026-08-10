@@ -795,6 +795,55 @@ describe("tenant RLS through Drizzle", () => {
     ).rejects.toThrow("verified UUIDv7");
   });
 
+  it("resolves an owner display name when the identity has none", async () => {
+    // Email sign-in leaves auth_identity.name empty, and users.name may not be
+    // blank. Copying the identity name straight through made onboarding fail on
+    // the very first action a new tenant takes.
+    const identityId = createEntityId();
+    await admin`
+      INSERT INTO auth_identity (id, name, email, email_verified)
+      VALUES (${identityId}, '', ${`blank-${identityId}@example.test`}, true)
+    `;
+    const [provisioned] = await app.db.execute<{ userId: string }>(sql`
+      SELECT user_id AS "userId" FROM app.provision_tenant_owner(
+        ${identityId}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${"Blank Name Ltd"},
+        ${null}
+      )
+    `);
+    const [row] = await admin<{ name: string }[]>`
+      SELECT name FROM users WHERE id = ${provisioned?.userId ?? ""}
+    `;
+    expect(row?.name).toBe(`blank-${identityId}`);
+  });
+
+  it("prefers an explicitly supplied owner display name", async () => {
+    const identityId = createEntityId();
+    await admin`
+      INSERT INTO auth_identity (id, name, email, email_verified)
+      VALUES (${identityId}, '', ${`explicit-${identityId}@example.test`}, true)
+    `;
+    const [provisioned] = await app.db.execute<{ userId: string }>(sql`
+      SELECT user_id AS "userId" FROM app.provision_tenant_owner(
+        ${identityId}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${"Explicit Name Ltd"},
+        ${"James Mwangi"}
+      )
+    `);
+    const [row] = await admin<{ name: string }[]>`
+      SELECT name FROM users WHERE id = ${provisioned?.userId ?? ""}
+    `;
+    expect(row?.name).toBe("James Mwangi");
+  });
+
   it("serializes first-tenant provisioning for one verified identity", async () => {
     const concurrentApp = createDatabase(appUrl, { maxConnections: 2 });
     const identityId = createEntityId();
@@ -811,7 +860,8 @@ describe("tenant RLS through Drizzle", () => {
           ${createEntityId()}::uuid,
           ${createEntityId()}::uuid,
           ${createEntityId()}::uuid,
-          ${legalName}
+          ${legalName},
+          ${null}
         )
       `);
 

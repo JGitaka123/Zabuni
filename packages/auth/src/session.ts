@@ -57,6 +57,12 @@ export async function resolveTenantSession(
 export interface ProvisionTenantInput {
   readonly identityId: string;
   readonly legalName: string;
+  /**
+   * Owner's display name. Optional: email sign-in leaves the identity name
+   * empty, and `users.name` may not be blank, so provisioning falls back to the
+   * identity name and then the email local part.
+   */
+  readonly fullName?: string;
 }
 
 export async function provisionFirstTenant(
@@ -80,7 +86,8 @@ export async function provisionFirstTenant(
       ${userId}::uuid,
       ${membershipId}::uuid,
       ${auditId}::uuid,
-      ${input.legalName}
+      ${input.legalName},
+      ${input.fullName ?? null}
     )
   `);
   const provisioned = rows[0];

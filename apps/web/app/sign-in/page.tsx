@@ -5,39 +5,34 @@ import { useState, type FormEvent } from "react";
 import { authClient } from "../../lib/auth-client";
 
 export default function SignInPage() {
-  const [channel, setChannel] = useState<"phone" | "email">("phone");
-  const [destination, setDestination] = useState("");
+  const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
+  const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
 
   async function requestCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
-    const result =
-      channel === "phone"
-        ? await authClient.phoneNumber.sendOtp({ phoneNumber: destination })
-        : await authClient.emailOtp.sendVerificationOtp({
-            email: destination,
-            type: "sign-in"
-          });
+    setPending(true);
+    const result = await authClient.emailOtp.sendVerificationOtp({ email, type: "sign-in" });
+    setPending(false);
     if (result.error !== null) {
-      setMessage("We could not send a code. Check the details and try again.");
+      setMessage("We could not send a code. Check the address and try again.");
       return;
     }
     setSent(true);
-    setMessage("Code sent.");
+    setMessage(`We sent a six-digit code to ${email}. It expires in five minutes.`);
   }
 
   async function verifyCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
-    const result =
-      channel === "phone"
-        ? await authClient.phoneNumber.verify({ phoneNumber: destination, code })
-        : await authClient.signIn.emailOtp({ email: destination, otp: code });
+    setPending(true);
+    const result = await authClient.signIn.emailOtp({ email, otp: code });
+    setPending(false);
     if (result.error !== null) {
-      setMessage("That code is invalid or expired.");
+      setMessage("That code is invalid or expired. Request a new one.");
       return;
     }
     window.location.assign("/shell");
@@ -48,46 +43,27 @@ export default function SignInPage() {
       <section className="panel">
         <p className="eyebrow">Secure access</p>
         <h1>Sign in to Zabuni</h1>
-        <div className="tabs" aria-label="Sign-in method">
-          <button
-            type="button"
-            aria-pressed={channel === "phone"}
-            onClick={() => {
-              setChannel("phone");
-            }}
-          >
-            Phone
-          </button>
-          <button
-            type="button"
-            aria-pressed={channel === "email"}
-            onClick={() => {
-              setChannel("email");
-            }}
-          >
-            Email fallback
-          </button>
-        </div>
         {!sent ? (
           <form
             onSubmit={(event) => {
               void requestCode(event);
             }}
           >
-            <label htmlFor="destination">
-              {channel === "phone" ? "Phone number" : "Email address"}
-            </label>
+            <label htmlFor="email">Work email address</label>
             <input
-              id="destination"
-              type={channel === "phone" ? "tel" : "email"}
+              id="email"
+              type="email"
+              autoComplete="email"
               required
-              value={destination}
+              value={email}
               onChange={(event) => {
-                setDestination(event.target.value);
+                setEmail(event.target.value);
               }}
-              placeholder={channel === "phone" ? "+254..." : "you@company.co.ke"}
+              placeholder="you@company.co.ke"
             />
-            <button type="submit">Send one-time code</button>
+            <button type="submit" disabled={pending}>
+              {pending ? "Sending…" : "Send one-time code"}
+            </button>
           </form>
         ) : (
           <form
@@ -99,6 +75,7 @@ export default function SignInPage() {
             <input
               id="code"
               inputMode="numeric"
+              autoComplete="one-time-code"
               pattern="[0-9]{6}"
               required
               value={code}
@@ -106,7 +83,20 @@ export default function SignInPage() {
                 setCode(event.target.value);
               }}
             />
-            <button type="submit">Verify and continue</button>
+            <button type="submit" disabled={pending}>
+              {pending ? "Verifying…" : "Verify and continue"}
+            </button>
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setSent(false);
+                setCode("");
+                setMessage("");
+              }}
+            >
+              Use a different address
+            </button>
           </form>
         )}
         <p role="status">{message}</p>

@@ -41,6 +41,17 @@ export interface ApiConfig extends CommonConfig {
   readonly apiOrigin: string;
   readonly webOrigin: string;
   readonly sentryDsn: string | undefined;
+  /**
+   * Where fixture OTP deliveries are appended so a local tester can read the
+   * code back. Meaningful only when `useFixtures` is true.
+   */
+  readonly fixtureOtpMailbox: string;
+  /**
+   * Forwarded-for style header to trust for the client address when the API runs
+   * behind a proxy. Unset means trust nothing and use the socket address, since
+   * a spoofed header would let a caller pick its own rate-limit bucket.
+   */
+  readonly trustedProxyIpHeader: string | undefined;
 }
 
 export interface WorkerConfig extends CommonConfig {
@@ -246,7 +257,9 @@ export function loadApiConfig(source: EnvironmentSource = process.env): ApiConfi
       production
     ),
     webOrigin: readHttpOrigin(collector, source, "WEB_ORIGIN", "http://localhost:3000", production),
-    sentryDsn: optional(source, "SENTRY_DSN")
+    sentryDsn: optional(source, "SENTRY_DSN"),
+    fixtureOtpMailbox: optional(source, "FIXTURE_OTP_MAILBOX") ?? "fixture-otp.jsonl",
+    trustedProxyIpHeader: optional(source, "TRUSTED_PROXY_IP_HEADER")?.toLowerCase()
   };
 
   collector.throwIfFailed();

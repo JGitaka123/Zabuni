@@ -29,7 +29,8 @@ describe("forward-only migrations", () => {
       "0015_tax_evidence_preflight.sql",
       "0016_catalog_matching.sql",
       "0017_catalog_rate_limit_boundary.sql",
-      "0018_outbox_stall_visibility.sql"
+      "0018_outbox_stall_visibility.sql",
+      "0019_owner_display_name.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });
