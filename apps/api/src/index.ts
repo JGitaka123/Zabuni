@@ -8,7 +8,11 @@ import {
 import { FixtureEmbeddingProvider } from "@zabuni/catalog";
 import { loadApiConfig } from "@zabuni/core";
 import { createTenantRuntime } from "@zabuni/db";
-import { createPinoStructuredLogger, initializeNodeSentry } from "@zabuni/observability";
+import {
+  createPinoStructuredLogger,
+  initializeNodeSentry,
+  installFatalHandlers
+} from "@zabuni/observability";
 
 import { createApp } from "./app.js";
 
@@ -39,24 +43,57 @@ const authRuntime = createAuthRuntime(config.authDatabaseUrl, {
 const memberships = createMembershipRuntime(config.databaseUrl);
 const tenantRuntime = createTenantRuntime(config.databaseUrl);
 
-const server = serve({
-  fetch: createApp({
-    auth: authRuntime.auth,
-    memberships,
-    tenants: tenantRuntime,
-    ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
-    readiness: () => memberships.ping(),
-    webOrigin: config.webOrigin,
-    telemetry: { logger, errors }
-  }).fetch,
-  port: config.port
+const server = serve(
+  {
+    fetch: createApp({
+      auth: authRuntime.auth,
+      memberships,
+      tenants: tenantRuntime,
+      ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
+      readiness: () => memberships.ping(),
+      webOrigin: config.webOrigin,
+      telemetry: { logger, errors }
+    }).fetch,
+    port: config.port
+  },
+  // Reported from the listening callback, not straight after serve(): binding is
+  // asynchronous, so logging early claims the service is up before it can accept
+  // a connection -- and still claims it when the bind then fails.
+  (info) => {
+    logger.info(
+      "service_started",
+      { correlationId: "startup" },
+      {
+        port: info.port,
+        environment: config.environment,
+        integrationMode: config.integrationMode
+      }
+    );
+  }
+);
+
+// A bind failure (port in use, privileged port) arrives as an 'error' event. Left
+// unhandled it terminates the process with a raw stack that reaches neither
+// Sentry nor the log stream.
+server.on("error", (error: NodeJS.ErrnoException) => {
+  errors.capture(error, { correlationId: "startup" });
+  logger.error(
+    "service_listen_failed",
+    { correlationId: "startup" },
+    { port: config.port, code: error.code ?? "unknown" }
+  );
+  process.exitCode = 1;
+  server.close();
 });
 
-logger.info(
-  "service_started",
-  { correlationId: "startup" },
-  { port: config.port, environment: config.environment, integrationMode: config.integrationMode }
-);
+installFatalHandlers({
+  logger,
+  errors,
+  correlationId: "api",
+  onFatal: () => {
+    server.close();
+  }
+});
 
 const SHUTDOWN_GRACE_MS = 15_000;
 let shuttingDown = false;
