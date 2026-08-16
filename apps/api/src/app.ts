@@ -7,6 +7,7 @@ import type { ErrorReporter, StructuredLogger } from "@zabuni/observability";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { secureHeaders } from "hono/secure-headers";
 
 import { requireTenantSession, type SessionVariables } from "./middleware/session.js";
 import { requireExpectedContentType } from "./security/content-type.js";
@@ -88,6 +89,13 @@ export interface AppDependencies {
 
 export function createApp(dependencies?: AppDependencies): Hono<{ Variables: SessionVariables }> {
   const app = new Hono<{ Variables: SessionVariables }>();
+  app.use(
+    "*",
+    secureHeaders({
+      permissionsPolicy: { camera: [], geolocation: [], microphone: [] },
+      xFrameOptions: "DENY"
+    })
+  );
   // Liveness: the process is up. Deliberately free of dependency checks so a
   // database blip cannot cause an orchestrator to restart-loop a healthy process.
   app.get("/health", (context) => context.json({ status: "ok" }));

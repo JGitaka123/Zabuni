@@ -117,7 +117,12 @@ function readRequired(collector: Collector, source: EnvironmentSource, name: str
   return raw;
 }
 
-function readPostgresUrl(collector: Collector, source: EnvironmentSource, name: string): string {
+function readPostgresUrl(
+  collector: Collector,
+  source: EnvironmentSource,
+  name: string,
+  requireTls: boolean
+): string {
   const raw = readRequired(collector, source, name);
   if (raw === "") return raw;
   let parsed: URL;
@@ -129,6 +134,14 @@ function readPostgresUrl(collector: Collector, source: EnvironmentSource, name: 
   }
   if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
     collector.add(`${name} must use the postgres:// or postgresql:// scheme`);
+  }
+  const sslModes = parsed.searchParams.getAll("sslmode");
+  const sslMode = sslModes[0];
+  if (
+    requireTls &&
+    (sslModes.length !== 1 || (sslMode !== "require" && sslMode !== "verify-full"))
+  ) {
+    collector.add(`${name} must set sslmode=require or sslmode=verify-full in production`);
   }
   return raw;
 }
@@ -155,7 +168,16 @@ function readHttpOrigin(
   if (requireHttps && parsed.protocol !== "https:") {
     collector.add(`${name} must use https:// in production`);
   }
-  return raw;
+  if (
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== ""
+  ) {
+    collector.add(`${name} must contain only an origin without credentials, path, query, or hash`);
+  }
+  return parsed.origin;
 }
 
 function readInteger(
@@ -276,6 +298,17 @@ function readWorkerId(collector: Collector, source: EnvironmentSource): string {
   return raw;
 }
 
+function readTrustedProxyIpHeader(
+  collector: Collector,
+  source: EnvironmentSource
+): string | undefined {
+  const header = optional(source, "TRUSTED_PROXY_IP_HEADER")?.toLowerCase();
+  if (header !== undefined && !/^[!#$%&'*+\-.^_`|~0-9a-z]+$/u.test(header)) {
+    collector.add("TRUSTED_PROXY_IP_HEADER must be a valid HTTP header name");
+  }
+  return header;
+}
+
 export function loadApiConfig(source: EnvironmentSource = process.env): ApiConfig {
   const collector = new Collector();
   const common = parseCommon(collector, source);
@@ -285,8 +318,8 @@ export function loadApiConfig(source: EnvironmentSource = process.env): ApiConfi
   const config: ApiConfig = {
     ...common,
     port,
-    databaseUrl: readPostgresUrl(collector, source, "DATABASE_URL"),
-    authDatabaseUrl: readPostgresUrl(collector, source, "DATABASE_AUTH_URL"),
+    databaseUrl: readPostgresUrl(collector, source, "DATABASE_URL", production),
+    authDatabaseUrl: readPostgresUrl(collector, source, "DATABASE_AUTH_URL", production),
     authSecret: readAuthSecret(collector, source, common.environment),
     apiOrigin: readHttpOrigin(
       collector,
@@ -298,7 +331,7 @@ export function loadApiConfig(source: EnvironmentSource = process.env): ApiConfi
     webOrigin: readHttpOrigin(collector, source, "WEB_ORIGIN", "http://localhost:3000", production),
     sentryDsn: readSentryDsn(collector, source, common.environment),
     fixtureOtpMailbox: optional(source, "FIXTURE_OTP_MAILBOX") ?? "fixture-otp.jsonl",
-    trustedProxyIpHeader: optional(source, "TRUSTED_PROXY_IP_HEADER")?.toLowerCase()
+    trustedProxyIpHeader: readTrustedProxyIpHeader(collector, source)
   };
 
   collector.throwIfFailed();
@@ -343,7 +376,12 @@ export function loadWorkerConfig(source: EnvironmentSource = process.env): Worke
 
   const config: WorkerConfig = {
     ...common,
-    workerDatabaseUrl: readPostgresUrl(collector, source, "DATABASE_WORKER_URL"),
+    workerDatabaseUrl: readPostgresUrl(
+      collector,
+      source,
+      "DATABASE_WORKER_URL",
+      common.environment === "production"
+    ),
     workerId: readWorkerId(collector, source),
     pollIntervalMs,
     idlePollIntervalMs,

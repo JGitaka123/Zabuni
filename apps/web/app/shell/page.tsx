@@ -2,11 +2,11 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 
+import { apiOrigin } from "../../lib/public-config";
+
 type SessionProof =
   | { authenticated: true; tenantId: string; tenantStatus: string; userId: string; role: string }
   | { error: string };
-
-const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 async function requestProof(): Promise<SessionProof> {
   const response = await fetch(`${apiOrigin}/session-proof`, { credentials: "include" });

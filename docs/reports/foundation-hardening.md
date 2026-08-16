@@ -154,3 +154,14 @@ pool returns the same redacted 503 response while liveness remains healthy.
 Fixture mode remains guaranteed offline. Sandbox and live modes now enable
 Sentry whenever a DSN is configured, and production API/worker configuration
 requires an HTTPS DSN instead of silently starting without error reporting.
+
+## Production transport and browser configuration (2026-08-16)
+
+Production API and worker database URLs now require an explicit encrypted
+PostgreSQL transport mode. Browser/API origins must be origin-only URLs, the
+trusted proxy header must be a legal HTTP token, and the production web build
+requires an HTTPS `NEXT_PUBLIC_API_URL` instead of falling back to localhost.
+
+The web and API now emit a conservative security-header baseline. The web CSP
+sets framing, base-URI, and object restrictions without guessing script policy;
+a nonce-based script policy can be introduced separately when required.

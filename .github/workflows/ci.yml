@@ -50,7 +50,9 @@ jobs:
       REDIS_URL: redis://localhost:6379
       BETTER_AUTH_SECRET: ci-only-secret-that-is-at-least-32-characters
       BETTER_AUTH_URL: http://localhost:3001
-      NEXT_PUBLIC_API_URL: http://localhost:3001
+      # Build-time public origin only; fixture HTTP acceptance overrides this
+      # when it launches the local browser/API pair.
+      NEXT_PUBLIC_API_URL: https://api.example.invalid
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
