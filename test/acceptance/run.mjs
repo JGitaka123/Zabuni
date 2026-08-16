@@ -16,6 +16,7 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 
 const API = process.env.ZABUNI_API ?? "http://localhost:3001";
+const WEB_ORIGIN = process.env.ZABUNI_WEB_ORIGIN ?? "http://localhost:3000";
 const MAILBOX = process.env.FIXTURE_OTP_MAILBOX ?? "fixture-otp.jsonl";
 const REPORT = process.env.ACCEPTANCE_REPORT ?? "";
 
@@ -80,6 +81,7 @@ function clientIpFor(seed) {
 
 async function call(path, { method = "GET", body, cookie, headers = {}, raw, ip } = {}) {
   const init = { method, headers: { ...headers }, redirect: "manual" };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) init.headers.Origin = WEB_ORIGIN;
   if (ip) init.headers["x-forwarded-for"] = ip;
   if (cookie) init.headers.Cookie = cookie;
   if (raw !== undefined) {
@@ -760,7 +762,7 @@ async function main() {
     form.set("mapping", mapping);
     const response = await fetch(`${API}/catalog/imports/preview`, {
       method: "POST",
-      headers: { Cookie: ownerCookie },
+      headers: { Cookie: ownerCookie, Origin: WEB_ORIGIN },
       body: form
     });
     const text = await response.text();
@@ -854,7 +856,7 @@ async function main() {
     form.set("file", new Blob([goodCsv("NOMAP")], { type: "text/csv" }), "catalog.csv");
     const response = await fetch(`${API}/catalog/imports/preview`, {
       method: "POST",
-      headers: { Cookie: ownerCookie },
+      headers: { Cookie: ownerCookie, Origin: WEB_ORIGIN },
       body: form
     });
     expect(response.status >= 400, `expected refusal, got ${response.status}`);
@@ -864,7 +866,11 @@ async function main() {
     const form = new FormData();
     form.set("file", new Blob([goodCsv("ANON")], { type: "text/csv" }), "catalog.csv");
     form.set("mapping", mapping);
-    const response = await fetch(`${API}/catalog/imports/preview`, { method: "POST", body: form });
+    const response = await fetch(`${API}/catalog/imports/preview`, {
+      method: "POST",
+      headers: { Origin: WEB_ORIGIN },
+      body: form
+    });
     expectStatus({ status: response.status }, 401, "anonymous preview");
   });
 
