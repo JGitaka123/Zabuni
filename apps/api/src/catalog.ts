@@ -27,10 +27,15 @@ import { bodyLimit } from "hono/body-limit";
 import { requireTenantSession, type SessionVariables } from "./middleware/session.js";
 
 const MAX_CATALOG_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_CATALOG_REQUEST_BYTES = MAX_CATALOG_FILE_BYTES + 1024 * 1024;
 const catalogFieldSet = new Set<string>(catalogFields);
 const taxClassSet = new Set<TaxClass>(["standard_16", "zero_rated", "exempt"]);
 const catalogJsonBodyLimit = bodyLimit({
   maxSize: 4 * 1024,
+  onError: (context) => context.json({ error: "catalog_request_too_large" }, 413)
+});
+const catalogUploadBodyLimit = bodyLimit({
+  maxSize: MAX_CATALOG_REQUEST_BYTES,
   onError: (context) => context.json({ error: "catalog_request_too_large" }, 413)
 });
 
@@ -87,6 +92,14 @@ function hasErrorCode(error: unknown, code: string): boolean {
     current = Reflect.get(current, "cause");
   }
   return false;
+}
+
+function isBodyLimitError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "BodyLimitError" &&
+    error.message === "Payload Too Large"
+  );
 }
 
 function isValidClassificationBasis(value: unknown): value is string {
@@ -481,7 +494,7 @@ export function registerCatalogRoutes(
     }
   });
 
-  app.post("/catalog/imports/preview", tenantSession, async (context) => {
+  app.post("/catalog/imports/preview", tenantSession, catalogUploadBodyLimit, async (context) => {
     const session = context.get("tenantSession");
     if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
     try {
@@ -514,11 +527,12 @@ export function registerCatalogRoutes(
         201
       );
     } catch (error) {
+      if (isBodyLimitError(error)) throw error;
       return context.json(validationResponse(error), 400);
     }
   });
 
-  app.post("/catalog/imports/inspect", tenantSession, async (context) => {
+  app.post("/catalog/imports/inspect", tenantSession, catalogUploadBodyLimit, async (context) => {
     const session = context.get("tenantSession");
     if (!mayWriteCatalog(session.role)) return context.json({ error: "catalog_write_denied" }, 403);
     try {
@@ -529,6 +543,7 @@ export function registerCatalogRoutes(
       if (table === undefined) return context.json({ error: "catalog_file_type_unsupported" }, 415);
       return context.json({ headers: table.headers, sampleRows: table.rows.slice(0, 5) });
     } catch (error) {
+      if (isBodyLimitError(error)) throw error;
       if (error instanceof RangeError && error.message === "catalog_file_size_invalid") {
         return context.json({ error: error.message }, 400);
       }

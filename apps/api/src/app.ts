@@ -36,6 +36,14 @@ function hasSqlState(error: unknown, code: string): boolean {
   return false;
 }
 
+function isBodyLimitError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "BodyLimitError" &&
+    error.message === "Payload Too Large"
+  );
+}
+
 interface NodeRequestEnv {
   readonly incoming?: { readonly socket?: { readonly remoteAddress?: string } };
 }
@@ -99,8 +107,8 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
     });
   }
 
-  if (dependencies.telemetry !== undefined) {
-    const telemetry = dependencies.telemetry;
+  const telemetry = dependencies.telemetry;
+  if (telemetry !== undefined) {
     app.use("*", async (context, next) => {
       const correlationId = randomUUID();
       context.set("correlationId", correlationId);
@@ -126,23 +134,37 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
         /* a dropped log line is preferable to a failed request */
       }
     });
-    app.onError((error, context) => {
-      const correlationId = context.get("correlationId");
-      // Same reasoning, and more important here: if reporting throws, the caller
-      // would get an empty 500 instead of the correlation id they need to quote.
-      try {
-        telemetry.logger.error("request_failed", { correlationId }, { error });
-      } catch {
-        /* fall through to the response */
-      }
-      try {
-        telemetry.errors.capture(error, { correlationId });
-      } catch {
-        /* fall through to the response */
-      }
-      return context.json({ error: "internal_error", correlationId }, 500);
-    });
   }
+
+  app.onError((error, context) => {
+    // Hono enforces streamed limits while downstream handlers consume the body,
+    // so its sentinel reaches the app handler before bodyLimit finalizes the
+    // response. It is an expected client rejection, not an internal incident.
+    if (isBodyLimitError(error)) {
+      return context.json({ error: "catalog_request_too_large" }, 413);
+    }
+    if (telemetry === undefined) {
+      // Match Hono's default behavior for unexpected failures when the app is
+      // instantiated without production telemetry (primarily local tests).
+      globalThis.console.error(error);
+      return context.text("Internal Server Error", 500);
+    }
+
+    const correlationId = context.get("correlationId");
+    // Same reasoning, and more important here: if reporting throws, the caller
+    // would get an empty 500 instead of the correlation id they need to quote.
+    try {
+      telemetry.logger.error("request_failed", { correlationId }, { error });
+    } catch {
+      /* fall through to the response */
+    }
+    try {
+      telemetry.errors.capture(error, { correlationId });
+    } catch {
+      /* fall through to the response */
+    }
+    return context.json({ error: "internal_error", correlationId }, 500);
+  });
 
   app.use(
     "*",

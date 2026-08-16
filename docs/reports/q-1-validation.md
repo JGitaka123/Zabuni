@@ -18,6 +18,7 @@ The Q-1 implementation is complete and passes synthetic/offline verification. It
 - Base-10 minor-unit strings at file/JSON boundaries and PostgreSQL `bigint` persistence.
 - Forced-RLS import audit tables, cross-tenant tests, immutable committed batches, and case-insensitive tenant/SKU uniqueness.
 - Resource limits for file size, XLSX archive expansion, rows, columns, and cell length; formulas and dates are rejected.
+- Authenticated import routes reject requests above 11 MiB before multipart parsing while retaining the 10 MiB per-file limit.
 - A catalog screen that exposes row number, SKU, field, and message for import problems.
 
 ## Verification evidence
@@ -26,6 +27,7 @@ The Q-1 implementation is complete and passes synthetic/offline verification. It
 - Catalog tests cover CSV/XLSX parsing, mapping, explicit tax, money validation, staging, CRUD, archive, tenant isolation, case-folded duplicates, and concurrent commit serialization.
 - Database tests cover all tenant-owned tables, import audit immutability, RLS, grants, and forward migrations.
 - API tests cover role denial, validation, file type rejection, wrapped uniqueness conflicts, and malformed identifiers.
+- API boundary tests cover declared-length and streamed oversized multipart requests with a stable HTTP 413 response.
 - Repository-wide typecheck passed (13/13 dependency-aware tasks).
 - Repository-wide lint passed (8/8 workspaces).
 - Repository-wide tests passed (22 files, 111 tests, including real PostgreSQL RLS and catalog integration checks).

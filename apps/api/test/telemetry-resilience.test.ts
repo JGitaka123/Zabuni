@@ -1,7 +1,7 @@
 import type { MembershipRuntime, AuthServer } from "@zabuni/auth";
 import type { ErrorReporter, StructuredLogger } from "@zabuni/observability";
 import type { TenantRuntime } from "@zabuni/db";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createApp, type AppDependencies } from "../src/app.js";
 
@@ -74,5 +74,58 @@ describe("telemetry never fails a request", () => {
     const body = (await response.json()) as { error: string; correlationId: string };
     expect(body.error).toBe("internal_error");
     expect(typeof body.correlationId).toBe("string");
+  });
+
+  it("reports an ordinary failure through both telemetry channels", async () => {
+    const dependencies = createDependencies("reporter");
+    const telemetry = dependencies.telemetry;
+    if (telemetry === undefined) throw new Error("test telemetry is required");
+    const logError = vi.fn<StructuredLogger["error"]>();
+    const capture = vi.fn<ErrorReporter["capture"]>();
+    const app = createApp({
+      ...dependencies,
+      telemetry: {
+        logger: { ...telemetry.logger, error: logError },
+        errors: { enabled: true, capture }
+      }
+    });
+    const failure = new Error("ordinary handler failure");
+    app.get("/boom", () => {
+      throw failure;
+    });
+
+    const response = await app.request("/boom");
+
+    expect(response.status).toBe(500);
+    const logged = logError.mock.calls[0];
+    const captured = capture.mock.calls[0];
+    expect(logged?.[0]).toBe("request_failed");
+    expect(logged?.[1].correlationId).toEqual(expect.stringMatching(/^[0-9a-f-]+$/u));
+    expect(logged?.[2]).toEqual({ error: failure });
+    expect(captured?.[0]).toBe(failure);
+    expect(captured?.[1].correlationId).toEqual(expect.stringMatching(/^[0-9a-f-]+$/u));
+  });
+
+  it("keeps ordinary failures visible without telemetry", async () => {
+    const dependencies = createDependencies("reporter");
+    const app = createApp({
+      auth: dependencies.auth,
+      memberships: dependencies.memberships,
+      tenants: dependencies.tenants,
+      webOrigin: dependencies.webOrigin
+    });
+    const failure = new Error("ordinary handler failure");
+    app.get("/boom", () => {
+      throw failure;
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const response = await app.request("/boom");
+      expect(response.status).toBe(500);
+      expect(consoleError).toHaveBeenCalledWith(failure);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

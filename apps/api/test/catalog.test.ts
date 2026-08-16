@@ -9,17 +9,25 @@ const identityId = "0197f000-0000-7000-8000-000000000001";
 const tenantId = "0197f000-0000-7000-8000-000000000002";
 const userId = "0197f000-0000-7000-8000-000000000003";
 
-function dependencies(role: TenantRole) {
+function dependencies(
+  role: TenantRole,
+  authenticated = true,
+  telemetry?: AppDependencies["telemetry"]
+) {
   const run = vi.fn(() => {
     throw new Error("tenant database should not be reached");
   });
   const auth = {
     api: {
       getSession: () =>
-        Promise.resolve({
-          user: { id: identityId },
-          session: { expiresAt: new Date("2099-01-01T00:00:00Z") }
-        })
+        Promise.resolve(
+          authenticated
+            ? {
+                user: { id: identityId },
+                session: { expiresAt: new Date("2099-01-01T00:00:00Z") }
+              }
+            : null
+        )
     }
   } as unknown as AuthServer;
   const memberships = {
@@ -42,12 +50,120 @@ function dependencies(role: TenantRole) {
       auth,
       memberships,
       tenants,
-      webOrigin: "http://localhost:3000"
+      webOrigin: "http://localhost:3000",
+      ...(telemetry === undefined ? {} : { telemetry })
     } satisfies AppDependencies)
   };
 }
 
 describe("catalog HTTP boundary", () => {
+  it("rejects an oversized multipart request before parsing its file", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request("/catalog/imports/inspect", {
+      method: "POST",
+      headers: {
+        "content-length": String(12 * 1024 * 1024),
+        "content-type": "multipart/form-data; boundary=catalog-test"
+      },
+      body: "--catalog-test--\r\n"
+    });
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_request_too_large" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized streamed multipart request without content-length", async () => {
+    const { app, run } = dependencies("owner");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const chunk = new Uint8Array(6 * 1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.enqueue(chunk);
+        controller.close();
+      }
+    });
+    const request = new Request("http://localhost/catalog/imports/preview", {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data; boundary=catalog-test" },
+      body,
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    try {
+      const response = await app.request(request);
+      expect(response.status).toBe(413);
+      await expect(response.json()).resolves.toEqual({ error: "catalog_request_too_large" });
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("does not report an oversized streamed request as an internal incident", async () => {
+    const logError = vi.fn();
+    const capture = vi.fn();
+    const { app, run } = dependencies("owner", true, {
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: logError
+      },
+      errors: { enabled: true, capture }
+    });
+    const chunk = new Uint8Array(6 * 1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.enqueue(chunk);
+        controller.close();
+      }
+    });
+    const request = new Request("http://localhost/catalog/imports/inspect", {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data; boundary=catalog-test" },
+      body,
+      duplex: "half"
+    } as RequestInit & { duplex: "half" });
+    const response = await app.request(request);
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_request_too_large" });
+    expect(logError).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("authenticates before applying the multipart request limit", async () => {
+    const { app, run } = dependencies("owner", false);
+    const response = await app.request("/catalog/imports/inspect", {
+      method: "POST",
+      headers: {
+        "content-length": String(12 * 1024 * 1024),
+        "content-type": "multipart/form-data; boundary=catalog-test"
+      },
+      body: "--catalog-test--\r\n"
+    });
+    expect(response.status).toBe(401);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("retains the stricter per-file limit within the multipart allowance", async () => {
+    const { app, run } = dependencies("owner");
+    const form = new FormData();
+    form.set(
+      "file",
+      new File([new Uint8Array(10 * 1024 * 1024 + 1)], "catalog.csv", { type: "text/csv" })
+    );
+    const response = await app.request("/catalog/imports/inspect", {
+      method: "POST",
+      body: form
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "catalog_file_size_invalid" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("rejects JSON mutations sent as a simple text request", async () => {
     const { app, run } = dependencies("owner");
     const response = await app.request("/catalog/matches", {
