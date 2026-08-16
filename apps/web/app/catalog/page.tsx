@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 
+import { apiOrigin } from "../../lib/public-config";
+
 type TaxClass = "standard_16" | "zero_rated" | "exempt";
 
 interface CatalogItem {
@@ -54,8 +56,6 @@ function isImportProblemRow(value: unknown): value is ImportProblemRow {
     Array.isArray(value.issues)
   );
 }
-
-const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 async function apiJson(
   path: string,

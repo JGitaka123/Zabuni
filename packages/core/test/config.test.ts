@@ -65,6 +65,9 @@ describe("loadApiConfig", () => {
       ...apiEnv,
       NODE_ENV: "production",
       INTEGRATION_MODE: "sandbox",
+      DATABASE_URL: "postgres://zabuni_app:zabuni_app@localhost:5432/zabuni?sslmode=require",
+      DATABASE_AUTH_URL:
+        "postgres://zabuni_auth:zabuni_auth@localhost:5432/zabuni?sslmode=verify-full",
       BETTER_AUTH_SECRET: VALID_SECRET,
       BETTER_AUTH_URL: "https://api.example.com",
       WEB_ORIGIN: "https://app.example.com",
@@ -129,6 +132,85 @@ describe("loadApiConfig", () => {
       loadApiConfig({ ...apiEnv, DATABASE_URL: "mysql://localhost:3306/zabuni" })
     );
     expect(problems).toContain("DATABASE_URL must use the postgres:// or postgresql:// scheme");
+  });
+
+  it("requires encrypted database transport in production", () => {
+    const problems = problemsOf(() =>
+      loadApiConfig({
+        ...apiEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live",
+        BETTER_AUTH_URL: "https://api.example.com",
+        WEB_ORIGIN: "https://app.example.com",
+        SENTRY_DSN: "https://public@example.invalid/1"
+      })
+    );
+    expect(problems).toContain(
+      "DATABASE_URL must set sslmode=require or sslmode=verify-full in production"
+    );
+    expect(problems).toContain(
+      "DATABASE_AUTH_URL must set sslmode=require or sslmode=verify-full in production"
+    );
+  });
+
+  it("rejects conflicting duplicate production database TLS modes", () => {
+    const problems = problemsOf(() =>
+      loadApiConfig({
+        ...apiEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live",
+        DATABASE_URL:
+          "postgres://zabuni_app:zabuni_app@localhost:5432/zabuni?sslmode=require&sslmode=disable",
+        DATABASE_AUTH_URL:
+          "postgres://zabuni_auth:zabuni_auth@localhost:5432/zabuni?sslmode=verify-full&sslmode=disable",
+        BETTER_AUTH_URL: "https://api.example.com",
+        WEB_ORIGIN: "https://app.example.com",
+        SENTRY_DSN: "https://public@example.invalid/1"
+      })
+    );
+    expect(problems).toContain(
+      "DATABASE_URL must set sslmode=require or sslmode=verify-full in production"
+    );
+    expect(problems).toContain(
+      "DATABASE_AUTH_URL must set sslmode=require or sslmode=verify-full in production"
+    );
+  });
+
+  it("requires origin-only browser and authentication URLs", () => {
+    const problems = problemsOf(() =>
+      loadApiConfig({
+        ...apiEnv,
+        BETTER_AUTH_URL: "http://user@example.com/auth?debug=1",
+        WEB_ORIGIN: "http://app.example.com/dashboard#top"
+      })
+    );
+    expect(problems).toContain(
+      "BETTER_AUTH_URL must contain only an origin without credentials, path, query, or hash"
+    );
+    expect(problems).toContain(
+      "WEB_ORIGIN must contain only an origin without credentials, path, query, or hash"
+    );
+  });
+
+  it("canonicalizes accepted origins before exact browser checks consume them", () => {
+    const config = loadApiConfig({
+      ...apiEnv,
+      BETTER_AUTH_URL: "HTTP://LOCALHOST:80/",
+      WEB_ORIGIN: "https://APP.EXAMPLE.COM:443/"
+    });
+    expect(config.apiOrigin).toBe("http://localhost");
+    expect(config.webOrigin).toBe("https://app.example.com");
+  });
+
+  it("validates the trusted proxy header name", () => {
+    expect(
+      loadApiConfig({ ...apiEnv, TRUSTED_PROXY_IP_HEADER: "X-Real-IP" })
+        .trustedProxyIpHeader
+    ).toBe("x-real-ip");
+    const problems = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, TRUSTED_PROXY_IP_HEADER: "x real ip" })
+    );
+    expect(problems).toContain("TRUSTED_PROXY_IP_HEADER must be a valid HTTP header name");
   });
 
   it("requires an HTTPS Sentry destination in production", () => {
@@ -254,5 +336,35 @@ describe("loadWorkerConfig", () => {
       loadWorkerConfig({ ...workerEnv, SENTRY_DSN: "https://public@example.invalid/not-a-project" })
     );
     expect(malformed).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+  });
+
+  it("requires encrypted worker database transport in production", () => {
+    const problems = problemsOf(() =>
+      loadWorkerConfig({
+        ...workerEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live",
+        SENTRY_DSN: "https://public@example.invalid/1"
+      })
+    );
+    expect(problems).toContain(
+      "DATABASE_WORKER_URL must set sslmode=require or sslmode=verify-full in production"
+    );
+  });
+
+  it("rejects conflicting duplicate worker database TLS modes", () => {
+    const problems = problemsOf(() =>
+      loadWorkerConfig({
+        ...workerEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live",
+        DATABASE_WORKER_URL:
+          "postgres://zabuni_worker:zabuni_worker@localhost:5432/zabuni?sslmode=require&sslmode=disable",
+        SENTRY_DSN: "https://public@example.invalid/1"
+      })
+    );
+    expect(problems).toContain(
+      "DATABASE_WORKER_URL must set sslmode=require or sslmode=verify-full in production"
+    );
   });
 });
