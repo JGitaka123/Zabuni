@@ -132,3 +132,15 @@ The cause is a correct security rule with a wrong error path. Committed imports 
 A rep who double-clicks Commit was therefore told the import did not exist, which reads as data loss immediately after a successful import. The lock now falls back to an unlocked read to distinguish the two cases: an existing import reports `not staged` (409) and a genuinely absent one still reports `not found` (404). The immutability guarantee is untouched -- the fallback never attempts to lock the committed row.
 
 Confirmed live against the running API: 409 for the already-committed import, 404 for an absent id.
+
+## Current authentication release guard (2026-08-16)
+
+Phone OTP has since been removed because the Better Auth phone plugin could not
+meet the hash-at-rest requirement. Email OTP is the only sign-in channel and is
+stored hashed. Fixture mode remains fully offline. Sandbox and live API startup
+now fail closed until an approved email delivery provider is wired; the service
+can no longer report healthy while every OTP send is guaranteed to fail.
+
+Cookie-authenticated custom mutations now require the exact configured web
+origin, and JSON/multipart routes reject misleading content types. Better Auth
+routes remain under Better Auth's own trusted-origin validation.

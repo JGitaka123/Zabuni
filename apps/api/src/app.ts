@@ -9,6 +9,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 
 import { requireTenantSession, type SessionVariables } from "./middleware/session.js";
+import { requireExpectedContentType } from "./security/content-type.js";
+import { requireTrustedBrowserOrigin } from "./security/origin.js";
 import { registerCatalogRoutes } from "./catalog.js";
 
 /** Header Better Auth is configured to read the client address from. */
@@ -151,6 +153,8 @@ export function createApp(dependencies?: AppDependencies): Hono<{ Variables: Ses
       credentials: true
     })
   );
+  app.use("*", requireTrustedBrowserOrigin(dependencies.webOrigin));
+  app.use("*", requireExpectedContentType);
 
   // Better Auth's rate limiter resolves the client only from headers and skips
   // limiting entirely when it cannot (`if (!ip) return`). Behind @hono/node-server

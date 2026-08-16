@@ -1,12 +1,5 @@
-import { appendFileSync } from "node:fs";
-
 import { serve } from "@hono/node-server";
-import {
-  createAuthRuntime,
-  createMembershipRuntime,
-  FixtureOtpTransport,
-  UnconfiguredOtpTransport
-} from "@zabuni/auth";
+import { createAuthRuntime, createMembershipRuntime } from "@zabuni/auth";
 import { FixtureEmbeddingProvider } from "@zabuni/catalog";
 import { loadApiConfig } from "@zabuni/core";
 import { createTenantRuntime } from "@zabuni/db";
@@ -17,6 +10,7 @@ import {
 } from "@zabuni/observability";
 
 import { createApp } from "./app.js";
+import { createConfiguredOtpTransport } from "./otp-transport.js";
 
 // Fail closed: an invalid environment aborts the boot before anything listens.
 // In particular this refuses to start production with fixture transports, which
@@ -35,15 +29,7 @@ const embeddingProvider = config.useFixtures ? new FixtureEmbeddingProvider() : 
 // database. In fixture mode only, deliveries are appended to a file mailbox so
 // sign-in is completable without an email provider. Production cannot reach
 // this branch: loadApiConfig refuses to boot production in fixture mode.
-const otpTransport = config.useFixtures
-  ? new FixtureOtpTransport((delivery) => {
-      appendFileSync(
-        config.fixtureOtpMailbox,
-        `${JSON.stringify({ ...delivery, sentAt: new Date().toISOString() })}\n`,
-        "utf8"
-      );
-    })
-  : new UnconfiguredOtpTransport();
+const otpTransport = createConfiguredOtpTransport(config);
 
 const authRuntime = createAuthRuntime(config.authDatabaseUrl, {
   secret: config.authSecret,

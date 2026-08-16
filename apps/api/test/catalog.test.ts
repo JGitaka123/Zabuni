@@ -48,6 +48,30 @@ function dependencies(role: TenantRole) {
 }
 
 describe("catalog HTTP boundary", () => {
+  it("rejects JSON mutations sent as a simple text request", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request("/catalog/matches", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ query: "hand wash" })
+    });
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-multipart catalog upload requests", async () => {
+    const { app, run } = dependencies("owner");
+    const response = await app.request("/catalog/imports/inspect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "unsupported_media_type" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("denies catalog writes to read-only tenant members before database access", async () => {
     const { app, run } = dependencies("readonly");
     const response = await app.request("/catalog/items", {
