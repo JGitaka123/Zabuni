@@ -42,6 +42,34 @@ afterAll(async () => {
 });
 
 describe("forward-only migration ledger", () => {
+  it("resets roles between migration files and before ledger writes", async () => {
+    const runner = await scopedRunner("role_reset");
+    const directory = await mkdtemp(join(tmpdir(), "zabuni-migrations-"));
+    const role = `zabuni_migration_probe_${String(process.pid)}_${String(Date.now())}`;
+    if (!/^zabuni_migration_probe_\d+_\d+$/u.test(role)) {
+      throw new Error("unsafe migration test role");
+    }
+
+    try {
+      await writeFile(
+        join(directory, "0000_set_role.sql"),
+        `CREATE ROLE ${role} NOLOGIN; SET ROLE ${role}; SELECT 1;`
+      );
+      await writeFile(
+        join(directory, "0001_requires_session_role.sql"),
+        "CREATE TABLE role_reset_probe (id integer PRIMARY KEY);"
+      );
+
+      await expect(applyMigrations(runner, directory)).resolves.toBeUndefined();
+      const [probe] = await runner<{ tableName: string | null }[]>`
+        SELECT to_regclass('role_reset_probe')::text AS "tableName"
+      `;
+      expect(probe?.tableName).toBe("role_reset_probe");
+    } finally {
+      await admin.unsafe(`DROP ROLE IF EXISTS ${role}`);
+    }
+  });
+
   it("refuses to run when an already-applied migration is edited", async () => {
     const runner = await scopedRunner("mutation");
     const directory = await mkdtemp(join(tmpdir(), "zabuni-migrations-"));
