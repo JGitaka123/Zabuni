@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/node";
+import { isValidSentryDsn, type IntegrationMode } from "@zabuni/core";
 
 import { createErrorReporter, type ErrorReporter } from "./errors.js";
 import { sanitizeTelemetry } from "./redaction.js";
@@ -7,17 +8,20 @@ export interface NodeSentryOptions {
   readonly dsn?: string;
   readonly environment: string;
   readonly release?: string;
-  readonly integrationMode?: "fixture" | "live";
+  readonly integrationMode: IntegrationMode;
 }
 
 /** Initializes Sentry only with an explicit DSN; fixture/local defaults stay offline. */
 export function initializeNodeSentry(options: NodeSentryOptions): ErrorReporter {
   if (
-    options.integrationMode !== "live" ||
+    options.integrationMode === "fixture" ||
     options.dsn === undefined ||
     options.dsn.trim().length === 0
   ) {
     return createErrorReporter(undefined, undefined);
+  }
+  if (!isValidSentryDsn(options.dsn)) {
+    throw new Error("Sentry DSN configuration is invalid");
   }
 
   Sentry.init({

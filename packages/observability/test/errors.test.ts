@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import { describe, expect, it, vi } from "vitest";
 
 import { createErrorReporter, type SentryCompatibleClient } from "../src/errors.js";
@@ -51,5 +52,32 @@ describe("createErrorReporter", () => {
       integrationMode: "fixture"
     });
     expect(reporter.enabled).toBe(false);
+  });
+
+  it.each(["sandbox", "live"] as const)(
+    "enables configured error reporting in %s mode",
+    (integrationMode) => {
+      const reporter = initializeNodeSentry({
+        dsn: "https://public@example.invalid/1",
+        environment: "test",
+        integrationMode
+      });
+      expect(reporter.enabled).toBe(true);
+      expect(Sentry.getClient()?.getDsn()?.projectId).toBe("1");
+      expect(Sentry.getClient()?.getTransport()).toBeDefined();
+    }
+  );
+
+  it("refuses to claim reporting is enabled for an SDK-invalid HTTPS DSN", () => {
+    for (const dsn of [
+      "https://example.invalid",
+      "https://public@example.invalid/1/",
+      "https://public-key@example.invalid/1",
+      "https://public@example.invalid:99999/1"
+    ]) {
+      expect(() =>
+        initializeNodeSentry({ dsn, environment: "test", integrationMode: "sandbox" })
+      ).toThrow("Sentry DSN configuration is invalid");
+    }
   });
 });

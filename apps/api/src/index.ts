@@ -11,6 +11,7 @@ import {
 
 import { createApp } from "./app.js";
 import { createConfiguredOtpTransport } from "./otp-transport.js";
+import { createApiReadiness } from "./readiness.js";
 
 // Fail closed: an invalid environment aborts the boot before anything listens.
 // In particular this refuses to start production with fixture transports, which
@@ -20,7 +21,7 @@ const config = loadApiConfig();
 const logger = createPinoStructuredLogger({ service: "api", environment: config.environment });
 const errors = initializeNodeSentry({
   environment: config.environment,
-  integrationMode: config.integrationMode === "live" ? "live" : "fixture",
+  integrationMode: config.integrationMode,
   ...(config.sentryDsn === undefined ? {} : { dsn: config.sentryDsn })
 });
 
@@ -48,7 +49,7 @@ const server = serve(
       memberships,
       tenants: tenantRuntime,
       ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
-      readiness: () => memberships.ping(),
+      readiness: createApiReadiness(authRuntime, memberships, tenantRuntime),
       ...(config.trustedProxyIpHeader === undefined
         ? {}
         : { trustedProxyIpHeader: config.trustedProxyIpHeader }),

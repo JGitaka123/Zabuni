@@ -222,6 +222,45 @@ function optional(source: EnvironmentSource, name: string): string | undefined {
   return raw === undefined || raw.trim() === "" ? undefined : raw;
 }
 
+/** Sentry DSNs require an HTTPS endpoint, public key, and numeric project id. */
+export function isValidSentryDsn(value: string): boolean {
+  // Keep this aligned with @sentry/core 9.46's DSN parser: keys/passwords use
+  // `\w`, hosts use [\w.-], ports are numeric, and the raw final path segment
+  // is the numeric project id. The anchored form also rejects a trailing slash,
+  // query, or fragment that the SDK would otherwise parse into an invalid id.
+  const match = /^https:\/\/\w+(?::\w*)?@[\w.-]+(?::\d+)?\/(.+)$/u.exec(value);
+  if (match === null) return false;
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    return false;
+  }
+  if (endpoint.port !== "") {
+    const port = Number(endpoint.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return false;
+  }
+  const lastPath = match[1];
+  const projectId = lastPath?.split("/").at(-1);
+  return projectId !== undefined && /^\d+$/u.test(projectId);
+}
+
+function readSentryDsn(
+  collector: Collector,
+  source: EnvironmentSource,
+  environment: RuntimeEnvironment
+): string | undefined {
+  const dsn = optional(source, "SENTRY_DSN");
+  if (dsn === undefined) {
+    if (environment === "production") collector.add("SENTRY_DSN is required in production");
+    return undefined;
+  }
+  if (!isValidSentryDsn(dsn)) {
+    collector.add("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+  }
+  return dsn;
+}
+
 /**
  * The worker id is both a database claim owner and a telemetry correlation id,
  * so it must satisfy the stricter of the two: the telemetry-safe label charset.
@@ -257,7 +296,7 @@ export function loadApiConfig(source: EnvironmentSource = process.env): ApiConfi
       production
     ),
     webOrigin: readHttpOrigin(collector, source, "WEB_ORIGIN", "http://localhost:3000", production),
-    sentryDsn: optional(source, "SENTRY_DSN"),
+    sentryDsn: readSentryDsn(collector, source, common.environment),
     fixtureOtpMailbox: optional(source, "FIXTURE_OTP_MAILBOX") ?? "fixture-otp.jsonl",
     trustedProxyIpHeader: optional(source, "TRUSTED_PROXY_IP_HEADER")?.toLowerCase()
   };
@@ -310,7 +349,7 @@ export function loadWorkerConfig(source: EnvironmentSource = process.env): Worke
     idlePollIntervalMs,
     leaseSeconds,
     shutdownGraceMs,
-    sentryDsn: optional(source, "SENTRY_DSN")
+    sentryDsn: readSentryDsn(collector, source, common.environment)
   };
 
   collector.throwIfFailed();

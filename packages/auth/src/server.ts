@@ -10,6 +10,7 @@ import { createDatabase, type Database } from "@zabuni/db/admin";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { emailOTP } from "better-auth/plugins";
+import { sql } from "drizzle-orm";
 
 import type { OtpTransport } from "./otp-transport.js";
 
@@ -85,6 +86,8 @@ export type AuthServer = ReturnType<typeof createAuthServer>;
 
 export interface AuthRuntime {
   readonly auth: AuthServer;
+  /** Round-trips the dedicated authentication pool for readiness probes. */
+  readonly ping: () => Promise<void>;
   readonly close: () => Promise<void>;
 }
 
@@ -95,6 +98,9 @@ export function createAuthRuntime(
   const connection = createDatabase(connectionString);
   return {
     auth: createAuthServer({ ...options, database: connection.db }),
+    ping: async () => {
+      await connection.db.execute(sql`SELECT 1`);
+    },
     close: () => connection.client.end()
   };
 }

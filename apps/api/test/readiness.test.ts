@@ -1,8 +1,9 @@
 import type { MembershipRuntime, AuthServer } from "@zabuni/auth";
 import type { TenantRuntime } from "@zabuni/db";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createApp, type AppDependencies } from "../src/app.js";
+import { createApiReadiness } from "../src/readiness.js";
 
 function createDependencies(readiness: () => Promise<void>): AppDependencies {
   const auth = { handler: () => new Response(null, { status: 404 }) } as unknown as AuthServer;
@@ -34,6 +35,30 @@ describe("readiness probe", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ready" });
   });
+
+  it.each(["auth", "memberships", "tenants"] as const)(
+    "reports unready when the %s database pool fails",
+    async (failedDependency) => {
+      const pings = {
+        auth: vi.fn(() => Promise.resolve()),
+        memberships: vi.fn(() => Promise.resolve()),
+        tenants: vi.fn(() => Promise.resolve())
+      };
+      pings[failedDependency].mockRejectedValueOnce(new Error("connection refused"));
+      const readiness = createApiReadiness(
+        { ping: pings.auth },
+        { ping: pings.memberships },
+        { ping: pings.tenants }
+      );
+      const response = await createApp(createDependencies(readiness)).request("/ready");
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({ status: "unready" });
+      expect(pings.auth).toHaveBeenCalledOnce();
+      expect(pings.memberships).toHaveBeenCalledOnce();
+      expect(pings.tenants).toHaveBeenCalledOnce();
+    }
+  );
 
   it("sheds traffic with 503 when the database is unreachable", async () => {
     const app = createApp(
