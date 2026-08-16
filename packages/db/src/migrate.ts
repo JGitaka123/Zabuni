@@ -36,6 +36,16 @@ export async function applyMigrations(sql: Sql, directory?: string): Promise<voi
   const migrations = await readMigrations(directory);
 
   await sql.begin(async (transaction) => {
+    const [executionContext] = await transaction<{ roleName: string }[]>`
+      SELECT current_user::text AS "roleName"
+    `;
+    const migrationRole = executionContext?.roleName;
+    if (migrationRole === undefined) throw new Error("Migration execution role could not be read");
+    // Migration files may use SET ROLE while creating narrowly-owned security
+    // boundaries. Never let that role leak into the migration ledger or the
+    // next file in the same batch. Restore the role explicitly selected by the
+    // caller rather than RESET ROLE: production and tests intentionally connect
+    // as zabuni_migrator and SET ROLE zabuni_owner before entering this runner.
     await transaction`SELECT pg_advisory_xact_lock(hashtext('zabuni:migrations'))`;
     await transaction.unsafe(`
       CREATE TABLE IF NOT EXISTS _zabuni_migrations (
@@ -59,7 +69,9 @@ export async function applyMigrations(sql: Sql, directory?: string): Promise<voi
         continue;
       }
 
+      await transaction`SELECT set_config('role', ${migrationRole}, false)`;
       await transaction.unsafe(migration.sql);
+      await transaction`SELECT set_config('role', ${migrationRole}, false)`;
       await transaction`
         INSERT INTO _zabuni_migrations (name, checksum)
         VALUES (${migration.name}, ${migration.checksum})

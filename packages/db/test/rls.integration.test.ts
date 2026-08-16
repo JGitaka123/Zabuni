@@ -844,6 +844,72 @@ describe("tenant RLS through Drizzle", () => {
     expect(row?.name).toBe("James Mwangi");
   });
 
+  it("keeps the six-argument owner-provisioning overload rollback-safe", async () => {
+    const identityId = createEntityId();
+    await admin`
+      INSERT INTO auth_identity (id, name, email, email_verified)
+      VALUES (${identityId}, '', ${`compat-${identityId}@example.test`}, true)
+    `;
+    const [provisioned] = await app.db.execute<{ userId: string }>(sql`
+      SELECT user_id AS "userId" FROM app.provision_tenant_owner(
+        ${identityId}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${createEntityId()}::uuid,
+        ${"Compatibility Ltd"}
+      )
+    `);
+    const [row] = await admin<{ name: string }[]>`
+      SELECT name FROM users WHERE id = ${provisioned?.userId ?? ""}
+    `;
+    expect(row?.name).toBe(`compat-${identityId}`);
+  });
+
+  it("installs the compatibility overload with narrow invoker privileges", async () => {
+    const [metadata] = await admin<
+      {
+        appExecute: boolean;
+        authExecute: boolean;
+        owner: string;
+        securityDefiner: boolean;
+        settings: string[] | null;
+        workerExecute: boolean;
+      }[]
+    >`
+      SELECT
+        pg_get_userbyid(p.proowner) AS owner,
+        p.prosecdef AS "securityDefiner",
+        p.proconfig AS settings,
+        has_function_privilege(
+          'zabuni_app',
+          'app.provision_tenant_owner(uuid,uuid,uuid,uuid,uuid,text)',
+          'EXECUTE'
+        ) AS "appExecute",
+        has_function_privilege(
+          'zabuni_auth',
+          'app.provision_tenant_owner(uuid,uuid,uuid,uuid,uuid,text)',
+          'EXECUTE'
+        ) AS "authExecute",
+        has_function_privilege(
+          'zabuni_worker',
+          'app.provision_tenant_owner(uuid,uuid,uuid,uuid,uuid,text)',
+          'EXECUTE'
+        ) AS "workerExecute"
+      FROM pg_proc p
+      WHERE p.oid = 'app.provision_tenant_owner(uuid,uuid,uuid,uuid,uuid,text)'::regprocedure
+    `;
+
+    expect(metadata).toEqual({
+      appExecute: true,
+      authExecute: false,
+      owner: "zabuni_owner",
+      securityDefiner: false,
+      settings: ["search_path=pg_catalog, app"],
+      workerExecute: false
+    });
+  });
+
   it("serializes first-tenant provisioning for one verified identity", async () => {
     const concurrentApp = createDatabase(appUrl, { maxConnections: 2 });
     const identityId = createEntityId();

@@ -30,9 +30,30 @@ describe("forward-only migrations", () => {
       "0016_catalog_matching.sql",
       "0017_catalog_rate_limit_boundary.sql",
       "0018_outbox_stall_visibility.sql",
-      "0019_owner_display_name.sql"
+      "0019_owner_display_name.sql",
+      "0020_owner_provisioning_compatibility.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
+  });
+
+  it("keeps the prior owner-provisioning signature available during rolling deploys", async () => {
+    const migrations = await readMigrations();
+    const compatibility =
+      migrations.find(({ name }) => name === "0020_owner_provisioning_compatibility.sql")?.sql ??
+      "";
+
+    expect(compatibility).toContain("SECURITY INVOKER");
+    expect(compatibility).toContain("SET search_path = pg_catalog, app");
+    expect(compatibility).toContain(
+      "CREATE FUNCTION app.provision_tenant_owner(\n  p_identity_id uuid"
+    );
+    expect(compatibility).toContain("NULL::text");
+    expect(compatibility).toContain(
+      "GRANT EXECUTE ON FUNCTION app.provision_tenant_owner(uuid, uuid, uuid, uuid, uuid, text)"
+    );
+    expect(compatibility).toContain(
+      "REVOKE ALL ON FUNCTION app.provision_tenant_owner(uuid, uuid, uuid, uuid, uuid, text)"
+    );
   });
 
   it("exposes outbox stall telemetry as an aggregate-only privileged function", async () => {
