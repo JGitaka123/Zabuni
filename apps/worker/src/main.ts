@@ -19,8 +19,8 @@ export async function main(): Promise<number> {
   const config = loadWorkerConfig();
   const telemetry = createWorkerObservability(
     config.environment,
-    config.sentryDsn,
-    config.integrationMode
+    config.integrationMode,
+    config.sentryDsn
   );
   const context = { correlationId: config.workerId };
 

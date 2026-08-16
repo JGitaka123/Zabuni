@@ -67,7 +67,8 @@ describe("loadApiConfig", () => {
       INTEGRATION_MODE: "sandbox",
       BETTER_AUTH_SECRET: VALID_SECRET,
       BETTER_AUTH_URL: "https://api.example.com",
-      WEB_ORIGIN: "https://app.example.com"
+      WEB_ORIGIN: "https://app.example.com",
+      SENTRY_DSN: "https://public@example.invalid/1"
     });
     expect(config.integrationMode).toBe("sandbox");
     expect(config.useFixtures).toBe(false);
@@ -128,6 +129,44 @@ describe("loadApiConfig", () => {
       loadApiConfig({ ...apiEnv, DATABASE_URL: "mysql://localhost:3306/zabuni" })
     );
     expect(problems).toContain("DATABASE_URL must use the postgres:// or postgresql:// scheme");
+  });
+
+  it("requires an HTTPS Sentry destination in production", () => {
+    const missing = problemsOf(() =>
+      loadApiConfig({
+        ...apiEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live",
+        BETTER_AUTH_URL: "https://api.example.com",
+        WEB_ORIGIN: "https://app.example.com"
+      })
+    );
+    expect(missing).toContain("SENTRY_DSN is required in production");
+
+    const insecure = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, SENTRY_DSN: "http://public@example.invalid/1" })
+    );
+    expect(insecure).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+
+    const malformedHttps = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, SENTRY_DSN: "https://example.invalid" })
+    );
+    expect(malformedHttps).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+
+    const trailingSlash = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, SENTRY_DSN: "https://public@example.invalid/1/" })
+    );
+    expect(trailingSlash).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+
+    const invalidKey = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, SENTRY_DSN: "https://public-key@example.invalid/1" })
+    );
+    expect(invalidKey).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
+
+    const invalidPort = problemsOf(() =>
+      loadApiConfig({ ...apiEnv, SENTRY_DSN: "https://public@example.invalid:99999/1" })
+    );
+    expect(invalidPort).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
   });
 
   it("reports every problem in one boot attempt", () => {
@@ -199,5 +238,21 @@ describe("loadWorkerConfig", () => {
       loadWorkerConfig({ NODE_ENV: "development", INTEGRATION_MODE: "fixture" })
     );
     expect(problems).toContain("DATABASE_WORKER_URL is required");
+  });
+
+  it("requires an HTTPS Sentry destination for a production worker", () => {
+    const problems = problemsOf(() =>
+      loadWorkerConfig({
+        ...workerEnv,
+        NODE_ENV: "production",
+        INTEGRATION_MODE: "live"
+      })
+    );
+    expect(problems).toContain("SENTRY_DSN is required in production");
+
+    const malformed = problemsOf(() =>
+      loadWorkerConfig({ ...workerEnv, SENTRY_DSN: "https://public@example.invalid/not-a-project" })
+    );
+    expect(malformed).toContain("SENTRY_DSN must be a valid HTTPS Sentry DSN");
   });
 });

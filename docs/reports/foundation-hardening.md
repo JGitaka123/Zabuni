@@ -144,3 +144,13 @@ can no longer report healthy while every OTP send is guaranteed to fail.
 Cookie-authenticated custom mutations now require the exact configured web
 origin, and JSON/multipart routes reject misleading content types. Better Auth
 routes remain under Better Auth's own trusted-origin validation.
+
+## Readiness and shared-environment telemetry (2026-08-16)
+
+API readiness now checks all three independently pooled database connections:
+authentication, membership resolution, and tenant operations. A failure in any
+pool returns the same redacted 503 response while liveness remains healthy.
+
+Fixture mode remains guaranteed offline. Sandbox and live modes now enable
+Sentry whenever a DSN is configured, and production API/worker configuration
+requires an HTTPS DSN instead of silently starting without error reporting.

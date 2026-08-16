@@ -4,6 +4,7 @@ import {
   type ErrorReporter,
   type StructuredLogger
 } from "@zabuni/observability";
+import type { IntegrationMode } from "@zabuni/core";
 
 export interface WorkerObservability {
   readonly logger: StructuredLogger;
@@ -12,14 +13,14 @@ export interface WorkerObservability {
 
 export function createWorkerObservability(
   environment: string,
-  sentryDsn?: string,
-  integrationMode: string = process.env.INTEGRATION_MODE ?? "fixture"
+  integrationMode: IntegrationMode,
+  sentryDsn?: string
 ): WorkerObservability {
   return {
     logger: createPinoStructuredLogger({ service: "worker", environment }),
     errors: initializeNodeSentry({
       environment,
-      integrationMode: integrationMode === "live" ? "live" : "fixture",
+      integrationMode,
       ...(sentryDsn === undefined ? {} : { dsn: sentryDsn })
     })
   };
