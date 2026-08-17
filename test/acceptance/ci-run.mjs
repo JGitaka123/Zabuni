@@ -102,7 +102,12 @@ export async function main(options = {}) {
   const webOrigin = "http://localhost:3000";
   const environment = {
     ...process.env,
-    NODE_ENV: "test",
+    // Better Auth deliberately collapses every client IP to 127.0.0.1 in test
+    // mode. This is a black-box service run, so use the normal development
+    // request path while keeping every external integration fixture-backed.
+    NODE_ENV: "development",
+    TEST: "false",
+    BETTER_AUTH_TELEMETRY: "0",
     INTEGRATION_MODE: "fixture",
     PORT: port,
     BETTER_AUTH_URL: apiOrigin,

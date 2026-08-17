@@ -49,11 +49,17 @@ test("startup failure bounds logs, terminates the API, and removes temporary dat
   const migration = join(fixtures, "migration.mjs");
   const api = join(fixtures, "api.mjs");
   const pidFile = join(fixtures, "api.pid");
+  const environmentFile = join(fixtures, "api.environment");
   writeFileSync(migration, "process.exit(0);\n", "utf8");
   writeFileSync(
     api,
     `import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+writeFileSync(${JSON.stringify(environmentFile)}, JSON.stringify({
+  nodeEnvironment: process.env.NODE_ENV,
+  testMode: process.env.TEST,
+  betterAuthTelemetry: process.env.BETTER_AUTH_TELEMETRY
+}));
 process.stdout.write("x".repeat(250000));
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1000);
@@ -81,6 +87,15 @@ setInterval(() => {}, 1000);
     assert.ok(diagnostics.includes("Acceptance service log (bounded)"));
     assert.ok(diagnostics.length <= 201_000, "diagnostics exceeded the log bound");
     assert.equal(existsSync(temporaryRoot), false, "temporary OTP directory was not removed");
+    assert.deepEqual(
+      JSON.parse(readFileSync(environmentFile, "utf8")),
+      {
+        nodeEnvironment: "development",
+        testMode: "false",
+        betterAuthTelemetry: "0"
+      },
+      "black-box API must use real IP handling without external telemetry"
+    );
     const pid = Number(readFileSync(pidFile, "utf8"));
     assert.throws(() => process.kill(pid, 0), /ESRCH|no such process/u);
   } finally {
