@@ -14,7 +14,8 @@
     "test:coverage": "turbo run test:coverage",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "acceptance": "node test/acceptance/run.mjs"
+    "acceptance": "node test/acceptance/run.mjs",
+    "acceptance:ci": "node --test test/acceptance/ci-run.test.mjs && node test/acceptance/ci-run.mjs"
   },
   "devDependencies": {
     "@eslint/js": "9.34.0",

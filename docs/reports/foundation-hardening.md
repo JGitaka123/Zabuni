@@ -165,3 +165,11 @@ requires an HTTPS `NEXT_PUBLIC_API_URL` instead of falling back to localhost.
 The web and API now emit a conservative security-header baseline. The web CSP
 sets framing, base-URI, and object restrictions without guessing script policy;
 a nonce-based script policy can be introduced separately when required.
+
+## HTTP acceptance in CI (2026-08-17)
+
+The 100-scenario fixture-mode HTTP acceptance suite now runs after build in the
+GitHub verification job. Its harness applies migrations, starts the compiled
+API, waits for full readiness, runs with an isolated OTP mailbox and client-IP
+namespace, preserves bounded service logs on failure, and always terminates the
+API and removes its temporary mailbox.
