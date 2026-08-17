@@ -31,7 +31,8 @@ describe("forward-only migrations", () => {
       "0017_catalog_rate_limit_boundary.sql",
       "0018_outbox_stall_visibility.sql",
       "0019_owner_display_name.sql",
-      "0020_owner_provisioning_compatibility.sql"
+      "0020_owner_provisioning_compatibility.sql",
+      "0021_catalog_mutation_boundary.sql"
     ]);
     expect(new Set(migrations.map(({ checksum }) => checksum)).size).toBe(migrations.length);
   });
@@ -130,6 +131,30 @@ describe("forward-only migrations", () => {
       expect(matching).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);
       expect(matching).toContain(`CREATE POLICY ${table}_boundary ON ${table} AS RESTRICTIVE`);
     }
+  });
+
+  it("moves catalog embedding and alias writes behind tenant-bound functions", async () => {
+    const migrations = await readMigrations();
+    const boundary =
+      migrations.find(({ name }) => name === "0021_catalog_mutation_boundary.sql")?.sql ?? "";
+
+    expect(boundary).toContain("SECURITY DEFINER");
+    expect(boundary).toContain("SET search_path = pg_catalog, public, app");
+    expect(boundary).toContain("current_tenant_id uuid := app.current_tenant_id()");
+    expect(boundary).toContain("item_embeddings_catalog_matching_owner");
+    expect(boundary).toContain("item_aliases_catalog_matching_owner");
+    expect(boundary).toContain("CREATE FUNCTION app.upsert_catalog_item_embedding");
+    expect(boundary).toContain("CREATE FUNCTION app.assign_catalog_item_alias");
+    expect(boundary).toContain("CREATE FUNCTION app.confirm_catalog_item_alias");
+    expect(boundary).toContain(
+      "REVOKE INSERT, UPDATE, DELETE ON item_embeddings, item_aliases FROM zabuni_app"
+    );
+    expect(boundary).toContain(
+      "REVOKE ALL ON FUNCTION app.assign_catalog_item_alias(uuid, uuid, text, text, boolean) FROM PUBLIC"
+    );
+    expect(boundary).toContain(
+      "GRANT EXECUTE ON FUNCTION app.assign_catalog_item_alias(uuid, uuid, text, text, boolean)"
+    );
   });
 
   it("adds retry-safe total-event LLM call metering", async () => {
