@@ -21,7 +21,14 @@ import {
   usageEvents,
   users
 } from "../src/schema.js";
-import { consumeCatalogRateLimit } from "../src/privileged/catalog-matching.js";
+import {
+  assignCatalogItemAlias,
+  confirmCatalogItemAlias,
+  consumeCatalogRateLimit,
+  deleteCatalogItemAlias,
+  deleteCatalogItemEmbedding,
+  upsertCatalogItemEmbedding
+} from "../src/privileged/catalog-matching.js";
 import { withTenant } from "../src/tenant-context.js";
 
 const adminUrl =
@@ -338,8 +345,7 @@ describe("tenant RLS through Drizzle", () => {
         .where(eq(items.id, ids.itemB));
       expect(updatedItems.count).toBe(0);
 
-      const deletedAliases = await db.delete(itemAliases).where(eq(itemAliases.id, ids.itemAliasB));
-      expect(deletedAliases.count).toBe(0);
+      await expect(deleteCatalogItemAlias(db, ids.itemAliasB)).resolves.toBe(false);
 
       const deletedImports = await db
         .delete(catalogImports)
@@ -381,39 +387,25 @@ describe("tenant RLS through Drizzle", () => {
   it("allows tenant-scoped embedding upserts and alias management", async () => {
     const aliasId = createEntityId();
     await withTenant(app.db, tenantA, async (db) => {
-      await db
-        .insert(itemEmbeddings)
-        .values({
-          itemId: ids.itemA,
-          tenantId: tenantA,
-          embedding: embeddingB,
-          normalizedText: "a item refreshed",
-          contentHash: "c".repeat(64),
-          provider: "fixture",
-          model: "deterministic",
-          modelVersion: "2"
-        })
-        .onConflictDoUpdate({
-          target: itemEmbeddings.itemId,
-          set: {
-            embedding: embeddingB,
-            normalizedText: "a item refreshed",
-            contentHash: "c".repeat(64),
-            modelVersion: "2",
-            updatedAt: new Date()
-          }
-        });
-      await db.insert(itemAliases).values({
-        id: aliasId,
-        tenantId: tenantA,
+      await upsertCatalogItemEmbedding(db, {
         itemId: ids.itemA,
-        aliasText: "A handwash",
-        source: "human"
+        embedding: embeddingB,
+        normalizedText: "a item refreshed",
+        contentHash: "c".repeat(64),
+        provider: "fixture",
+        model: "deterministic",
+        modelVersion: "2"
       });
-      await db
-        .update(itemAliases)
-        .set({ hitCount: 1, lastUsedAt: new Date() })
-        .where(eq(itemAliases.id, aliasId));
+      await expect(
+        assignCatalogItemAlias(db, {
+          aliasId,
+          itemId: ids.itemA,
+          aliasText: "a handwash",
+          source: "human",
+          reassign: false
+        })
+      ).resolves.toBe(aliasId);
+      await confirmCatalogItemAlias(db, aliasId);
       await expect(
         db.select({ modelVersion: itemEmbeddings.modelVersion }).from(itemEmbeddings)
       ).resolves.toEqual([{ modelVersion: "2" }]);
@@ -423,12 +415,12 @@ describe("tenant RLS through Drizzle", () => {
           .from(itemAliases)
           .where(eq(itemAliases.id, aliasId))
       ).resolves.toEqual([{ hitCount: 1 }]);
-      await db.delete(itemAliases).where(eq(itemAliases.id, aliasId));
-      await db.delete(itemEmbeddings).where(eq(itemEmbeddings.itemId, ids.itemA));
+      await expect(deleteCatalogItemAlias(db, aliasId)).resolves.toBe(true);
+      await expect(deleteCatalogItemEmbedding(db, ids.itemA)).resolves.toBe(true);
     });
   });
 
-  it("enforces case-insensitive alias uniqueness and nonnegative usage", async () => {
+  it("denies direct catalog matching writes and rejects cross-tenant function targets", async () => {
     await expect(
       withTenant(app.db, tenantA, (db) =>
         db.insert(itemAliases).values({
@@ -439,12 +431,100 @@ describe("tenant RLS through Drizzle", () => {
           source: "human"
         })
       )
-    ).rejects.toMatchObject({ cause: { code: "23505" } });
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
     await expect(
       withTenant(app.db, tenantA, (db) =>
         db.update(itemAliases).set({ hitCount: -1 }).where(eq(itemAliases.id, ids.itemAliasA))
       )
-    ).rejects.toMatchObject({ cause: { code: "23514" } });
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db.delete(itemAliases).where(eq(itemAliases.id, ids.itemAliasA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        db
+          .update(itemEmbeddings)
+          .set({ modelVersion: "direct-write" })
+          .where(eq(itemEmbeddings.itemId, ids.itemA))
+      )
+    ).rejects.toMatchObject({ cause: { code: "42501" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        upsertCatalogItemEmbedding(db, {
+          itemId: ids.itemB,
+          embedding: embeddingB,
+          normalizedText: "b item",
+          contentHash: "d".repeat(64),
+          provider: "fixture",
+          model: "deterministic",
+          modelVersion: "2"
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "P0002" } });
+    await expect(
+      withTenant(app.db, tenantA, (db) =>
+        assignCatalogItemAlias(db, {
+          aliasId: createEntityId(),
+          itemId: ids.itemB,
+          aliasText: "cross tenant alias",
+          source: "human",
+          reassign: false
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: "P0002" } });
+  });
+
+  it("installs catalog mutation functions with narrow fixed privileges", async () => {
+    const metadata = await admin<
+      {
+        appExecute: boolean;
+        authExecute: boolean;
+        functionName: string;
+        owner: string;
+        securityDefiner: boolean;
+        settings: string[] | null;
+        workerExecute: boolean;
+      }[]
+    >`
+      SELECT
+        p.proname AS "functionName",
+        pg_get_userbyid(p.proowner) AS owner,
+        p.prosecdef AS "securityDefiner",
+        p.proconfig AS settings,
+        has_function_privilege('zabuni_app', p.oid, 'EXECUTE') AS "appExecute",
+        has_function_privilege('zabuni_auth', p.oid, 'EXECUTE') AS "authExecute",
+        has_function_privilege('zabuni_worker', p.oid, 'EXECUTE') AS "workerExecute"
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'app' AND p.proname = ANY(${[
+        "assign_catalog_item_alias",
+        "confirm_catalog_item_alias",
+        "delete_catalog_item_alias",
+        "delete_catalog_item_embedding",
+        "upsert_catalog_item_embedding"
+      ]})
+      ORDER BY p.proname
+    `;
+
+    expect(metadata.map(({ functionName }) => functionName)).toEqual([
+      "assign_catalog_item_alias",
+      "confirm_catalog_item_alias",
+      "delete_catalog_item_alias",
+      "delete_catalog_item_embedding",
+      "upsert_catalog_item_embedding"
+    ]);
+    for (const boundary of metadata) {
+      expect(boundary).toMatchObject({
+        appExecute: true,
+        authExecute: false,
+        owner: "zabuni_owner",
+        securityDefiner: true,
+        settings: ["search_path=pg_catalog, public, app"],
+        workerExecute: false
+      });
+    }
   });
 
   it("allows only the tenant-bound rate-limit function to mutate counters", async () => {
@@ -1035,20 +1115,14 @@ describe("tenant RLS through Drizzle", () => {
       ORDER BY table_name, privilege_type
     `;
     expect(grants.filter(({ privilege }) => privilege === "DELETE")).toEqual([
-      { privilege: "DELETE", tableName: "catalog_imports" },
-      { privilege: "DELETE", tableName: "item_aliases" },
-      { privilege: "DELETE", tableName: "item_embeddings" }
+      { privilege: "DELETE", tableName: "catalog_imports" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "UPDATE")).toEqual([
-      { privilege: "UPDATE", tableName: "catalog_imports" },
-      { privilege: "UPDATE", tableName: "item_aliases" },
-      { privilege: "UPDATE", tableName: "item_embeddings" }
+      { privilege: "UPDATE", tableName: "catalog_imports" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "INSERT")).toEqual([
       { privilege: "INSERT", tableName: "catalog_import_rows" },
       { privilege: "INSERT", tableName: "catalog_imports" },
-      { privilege: "INSERT", tableName: "item_aliases" },
-      { privilege: "INSERT", tableName: "item_embeddings" },
       { privilege: "INSERT", tableName: "usage_events" }
     ]);
     expect(grants.filter(({ privilege }) => privilege === "SELECT")).toHaveLength(

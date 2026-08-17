@@ -20,6 +20,7 @@ The code is ready for review and integration. Q-3 is not formally accepted becau
 - Added explicit alias administration and confirmation workflows with role checks, atomic first-use behavior, controlled reassignment, case-insensitive uniqueness, and usage counting.
 - Added authenticated API routes with 4 KiB body limits, result caps, input validation, database-shared per-user/per-tenant rate controls, cross-instance concurrency limits, and bounded pagination.
 - Moved rate-counter mutation behind a tenant-validating, fixed-search-path database function and revoked direct application inserts and updates.
+- Moved embedding upsert/delete and alias assign/reassign/remove/confirm mutations behind tenant-validating, fixed-search-path database functions; the application role now retains read-only table access and execute-only mutation capabilities.
 - Added a reproducible fixture evaluation CLI that refreshes current vectors, records dataset/catalog checksums, and fails below 80%; it is intentionally not evidence of Safuney acceptance.
 - Updated local and CI PostgreSQL provisioning to include pgvector and updated Turbo environment forwarding so integration database overrides reach every workspace package.
 
@@ -48,6 +49,7 @@ Independent correctness and security reviewers audited the final diff. Their ear
 - Vector candidates are filtered by tenant and descriptor, while stale or incompatible vectors are excluded. Forced RLS remains the database backstop.
 - Work per request is bounded: 1,000-character match text, 25 returned matches, 100 vector candidates, 250 lexical candidates, 10,000 tenant aliases, paginated alias reads, 4 KiB JSON bodies, 30 match requests per user/minute, 300 per tenant/minute, 2 concurrent matches per user, 4 concurrent matches per tenant across instances, and a 2-second database statement timeout.
 - Alias writes have separate database-shared user and tenant windows. A database-maintained quota counter atomically enforces the 10,000-alias tenant cap even when writes race.
+- Direct application-role inserts, updates, and deletes on aliases and embeddings are denied. The privileged functions derive the tenant from transaction context, validate active item ownership, and preserve alias serialization and quota enforcement.
 
 ## Formal acceptance blockers
 
@@ -66,6 +68,4 @@ Until items 1-3 are complete, the repository's order-of-work rule prevents Q-4 f
 
 ## Known non-blocking issues
 
-- The database application role still has direct RLS-protected mutation grants on item aliases and embeddings. A future hardening task can replace those writes with narrow fixed-search-path security-definer functions, but forced RLS, typed request paths, composite tenant keys, and the protected alias-quota trigger currently enforce the operative boundaries.
 - The HNSW index is global. Exact tenant-filtered ordering protects correctness today, but larger multi-tenant scale should use partitioning or another tenant-aware ANN strategy before approximate search is enabled.
-- The Next.js build reports that its optional ESLint plugin is not detected in the shared ESLint configuration. Compilation, strict type checking, repository linting, and static generation still pass.

@@ -8,6 +8,13 @@ import {
   type AliasSource,
   type TenantDatabase
 } from "@zabuni/db";
+import {
+  assignCatalogItemAlias,
+  confirmCatalogItemAlias,
+  deleteCatalogItemAlias,
+  deleteCatalogItemEmbedding,
+  upsertCatalogItemEmbedding
+} from "@zabuni/db/privileged/catalog-matching";
 
 import {
   buildItemSearchText,
@@ -188,11 +195,8 @@ export class TenantCatalogMatcher {
       .limit(1);
     if (item === undefined) return "not_found";
     if (!item.active) {
-      const removed = await this.#database
-        .delete(itemEmbeddings)
-        .where(and(eq(itemEmbeddings.tenantId, this.#tenantId), eq(itemEmbeddings.itemId, itemId)))
-        .returning({ itemId: itemEmbeddings.itemId });
-      return removed.length === 0 ? "unchanged" : "removed";
+      const removed = await deleteCatalogItemEmbedding(this.#database, itemId);
+      return removed ? "removed" : "unchanged";
     }
     const normalizedText = buildItemSearchText(item);
     const contentHash = embeddingContentHash(normalizedText);
@@ -211,30 +215,15 @@ export class TenantCatalogMatcher {
       return "unchanged";
     }
     const embedding = validateEmbedding(await provider.embed(normalizedText));
-    await this.#database
-      .insert(itemEmbeddings)
-      .values({
-        tenantId: this.#tenantId,
-        itemId,
-        embedding,
-        normalizedText,
-        contentHash,
-        provider: descriptor.provider,
-        model: descriptor.model,
-        modelVersion: descriptor.version
-      })
-      .onConflictDoUpdate({
-        target: itemEmbeddings.itemId,
-        set: {
-          embedding,
-          normalizedText,
-          contentHash,
-          provider: descriptor.provider,
-          model: descriptor.model,
-          modelVersion: descriptor.version,
-          updatedAt: sql`CURRENT_TIMESTAMP`
-        }
-      });
+    await upsertCatalogItemEmbedding(this.#database, {
+      itemId,
+      embedding,
+      normalizedText,
+      contentHash,
+      provider: descriptor.provider,
+      model: descriptor.model,
+      modelVersion: descriptor.version
+    });
     return "refreshed";
   }
 
@@ -287,74 +276,43 @@ export class TenantCatalogMatcher {
       .limit(1);
     if (item === undefined) throw new Error("Alias item was not found or is inactive");
 
-    await this.#database.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${this.#tenantId}, 734921))`
-    );
-
-    const [existing] = await this.#database
-      .select()
-      .from(itemAliases)
-      .where(
-        and(
-          eq(itemAliases.tenantId, this.#tenantId),
-          sql`lower(${itemAliases.aliasText}) = lower(${aliasText})`
-        )
-      )
-      .for("update")
-      .limit(1);
-    if (existing !== undefined) {
-      if (existing.itemId === input.itemId) return existing;
-      if (input.reassign !== true) throw new Error("Alias is already assigned to another item");
-      const [reassigned] = await this.#database
-        .update(itemAliases)
-        .set({ itemId: input.itemId, source: input.source, hitCount: 0, lastUsedAt: null })
-        .where(and(eq(itemAliases.tenantId, this.#tenantId), eq(itemAliases.id, existing.id)))
-        .returning();
-      if (reassigned === undefined) throw new Error("Alias reassignment failed");
-      return reassigned;
-    }
-
-    let created: typeof itemAliases.$inferSelect | undefined;
+    let aliasId: string;
     try {
-      [created] = await this.#database
-        .insert(itemAliases)
-        .values({
-          id: createEntityId(),
-          tenantId: this.#tenantId,
-          itemId: input.itemId,
-          aliasText,
-          source: input.source
-        })
-        .returning();
+      aliasId = await assignCatalogItemAlias(this.#database, {
+        aliasId: createEntityId(),
+        itemId: input.itemId,
+        aliasText,
+        source: input.source,
+        reassign: input.reassign === true
+      });
     } catch (error) {
       if (hasDatabaseCode(error, "23514")) {
         throw new Error("Tenant alias limit reached", { cause: error });
       }
       throw error;
     }
-    if (created === undefined) throw new Error("Alias assignment failed");
-    return created;
+    const [assigned] = await this.#database
+      .select()
+      .from(itemAliases)
+      .where(and(eq(itemAliases.tenantId, this.#tenantId), eq(itemAliases.id, aliasId)))
+      .limit(1);
+    if (assigned === undefined) throw new Error("Alias assignment failed");
+    return assigned;
   }
 
   async removeAlias(aliasId: string): Promise<boolean> {
     if (!isUuidV7(aliasId)) throw new Error("Alias must be a verified UUIDv7");
-    const removed = await this.#database
-      .delete(itemAliases)
-      .where(and(eq(itemAliases.tenantId, this.#tenantId), eq(itemAliases.id, aliasId)))
-      .returning({ id: itemAliases.id });
-    return removed.length === 1;
+    return deleteCatalogItemAlias(this.#database, aliasId);
   }
 
   async confirmMatch(queryText: string, itemId: string): Promise<AliasRecord> {
     const alias = await this.addAlias({ itemId, aliasText: queryText, source: "accepted_match" });
+    await confirmCatalogItemAlias(this.#database, alias.id);
     const [confirmed] = await this.#database
-      .update(itemAliases)
-      .set({
-        hitCount: sql`${itemAliases.hitCount} + 1`,
-        lastUsedAt: sql`CURRENT_TIMESTAMP`
-      })
+      .select()
+      .from(itemAliases)
       .where(and(eq(itemAliases.tenantId, this.#tenantId), eq(itemAliases.id, alias.id)))
-      .returning();
+      .limit(1);
     if (confirmed === undefined) throw new Error("Alias confirmation failed");
     return confirmed;
   }
