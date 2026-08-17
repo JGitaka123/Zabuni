@@ -345,8 +345,7 @@ describe("tenant RLS through Drizzle", () => {
         .where(eq(items.id, ids.itemB));
       expect(updatedItems.count).toBe(0);
 
-      const deletedAliases = await db.delete(itemAliases).where(eq(itemAliases.id, ids.itemAliasB));
-      expect(deletedAliases.count).toBe(0);
+      await expect(deleteCatalogItemAlias(db, ids.itemAliasB)).resolves.toBe(false);
 
       const deletedImports = await db
         .delete(catalogImports)

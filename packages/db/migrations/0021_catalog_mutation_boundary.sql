@@ -133,8 +133,7 @@ BEGIN
       RETURN existing_alias.id;
     END IF;
     IF NOT p_reassign THEN
-      RAISE EXCEPTION 'Alias is already assigned to another item'
-        USING ERRCODE = 'unique_violation';
+      RETURN NULL;
     END IF;
     UPDATE public.item_aliases SET
       item_id = p_item_id,

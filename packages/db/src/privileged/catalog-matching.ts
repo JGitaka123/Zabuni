@@ -49,7 +49,7 @@ export async function assignCatalogItemAlias(
     readonly reassign: boolean;
   }
 ): Promise<string> {
-  const [result] = await database.execute<{ aliasId: string }>(sql`
+  const [result] = await database.execute<{ aliasId: string | null }>(sql`
     SELECT app.assign_catalog_item_alias(
       ${input.aliasId}::uuid,
       ${input.itemId}::uuid,
@@ -58,7 +58,8 @@ export async function assignCatalogItemAlias(
       ${input.reassign}
     ) AS "aliasId"
   `);
-  if (result?.aliasId === undefined) throw new Error("Alias assignment failed");
+  if (result === undefined) throw new Error("Alias assignment failed");
+  if (result.aliasId === null) throw new Error("Alias is already assigned to another item");
   return result.aliasId;
 }
 
