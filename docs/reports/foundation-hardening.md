@@ -173,3 +173,11 @@ GitHub verification job. Its harness applies migrations, starts the compiled
 API, waits for full readiness, runs with an isolated OTP mailbox and client-IP
 namespace, preserves bounded service logs on failure, and always terminates the
 API and removes its temporary mailbox.
+
+## Authentication expiry and suspension coverage (2026-08-17)
+
+The authentication integration suite now expires a real durable email-OTP row
+before verification and proves that Better Auth rejects it without issuing a
+session cookie. It also exercises membership resolution against PostgreSQL and
+proves that expired sessions, suspended memberships, and suspended tenants all
+fail closed. The scenarios remain fixture-only and make no external request.
