@@ -3,6 +3,19 @@ import ExcelJS from "exceljs";
 
 import type { ParsedTable } from "./types.js";
 
+/**
+ * A problem with the uploaded file itself, as opposed to a problem with a
+ * value inside it. Every message names something about the user's own file and
+ * carries no internal detail, so the API returns it verbatim -- a bare
+ * "validation failed" left a tester with no idea what to change.
+ */
+export class CatalogParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CatalogParseError";
+  }
+}
+
 const MAX_ROWS = 20_000;
 const MAX_COLUMNS = 100;
 const MAX_CELL_LENGTH = 10_000;
@@ -20,22 +33,19 @@ function guardXlsxArchive(buffer: Buffer): void {
     compressedBytes += buffer.readUInt32LE(offset + 20);
     uncompressedBytes += buffer.readUInt32LE(offset + 24);
     if (entries > MAX_XLSX_ENTRIES || uncompressedBytes > MAX_XLSX_UNCOMPRESSED_BYTES) {
-      throw new RangeError("The XLSX archive exceeds safe resource limits");
+      throw new CatalogParseError("The XLSX archive exceeds safe resource limits");
     }
   }
-  if (entries === 0) throw new Error("The XLSX archive is invalid");
-  if (
-    compressedBytes > 0 &&
-    uncompressedBytes / compressedBytes > MAX_XLSX_COMPRESSION_RATIO
-  ) {
-    throw new RangeError("The XLSX archive compression ratio exceeds safe limits");
+  if (entries === 0) throw new CatalogParseError("The XLSX archive is invalid");
+  if (compressedBytes > 0 && uncompressedBytes / compressedBytes > MAX_XLSX_COMPRESSION_RATIO) {
+    throw new CatalogParseError("The XLSX archive compression ratio exceeds safe limits");
   }
 }
 
 function cleanCell(value: string): string {
   const cleaned = value.replace(/^\uFEFF/, "").trim();
   if (cleaned.length > MAX_CELL_LENGTH) {
-    throw new RangeError(`A catalog cell exceeds ${String(MAX_CELL_LENGTH)} characters`);
+    throw new CatalogParseError(`A catalog cell exceeds ${String(MAX_CELL_LENGTH)} characters`);
   }
   return cleaned;
 }
@@ -43,34 +53,46 @@ function cleanCell(value: string): string {
 function tableFromMatrix(matrix: readonly (readonly string[])[]): ParsedTable {
   const [headerRow, ...dataRows] = matrix;
   if (headerRow === undefined || headerRow.length === 0) {
-    throw new Error("The catalog file has no header row");
+    throw new CatalogParseError("The catalog file has no header row");
   }
   if (headerRow.length > MAX_COLUMNS) {
-    throw new RangeError(`Catalog files may contain at most ${String(MAX_COLUMNS)} columns`);
+    throw new CatalogParseError(`Catalog files may contain at most ${String(MAX_COLUMNS)} columns`);
   }
 
   const headers = headerRow.map(cleanCell);
   if (headers.some((header) => header.length === 0)) {
-    throw new Error("Every catalog column must have a non-blank heading");
+    throw new CatalogParseError("Every catalog column must have a non-blank heading");
   }
   const normalized = headers.map((header) => header.toLocaleLowerCase("en-KE"));
   if (new Set(normalized).size !== normalized.length) {
-    throw new Error("Catalog column headings must be unique (case-insensitive)");
+    throw new CatalogParseError("Catalog column headings must be unique (case-insensitive)");
   }
   if (dataRows.length > MAX_ROWS) {
-    throw new RangeError(`Catalog files may contain at most ${String(MAX_ROWS)} data rows`);
+    throw new CatalogParseError(`Catalog files may contain at most ${String(MAX_ROWS)} data rows`);
   }
 
   const rows = dataRows
-    .map((row) =>
-      headers.reduce<Record<string, string>>((result, header, index) => {
-        result[header] = cleanCell(row[index] ?? "");
+    .map((row, index) => {
+      // Cells past the last heading have nowhere to go. Dropping them quietly
+      // would be the worst outcome of all: a row shifted by one column imports
+      // a plausible-looking price against the wrong SKU, and the preview the
+      // user is asked to check would show the same wrong thing the commit
+      // writes. A trailing delimiter is forgiven, since the overflow is empty.
+      const overflow = row.slice(headers.length).map(cleanCell);
+      if (overflow.some((value) => value !== "")) {
+        throw new CatalogParseError(
+          `Row ${String(index + 2)} has ${String(overflow.filter((value) => value !== "").length)} ` +
+            `more values than there are column headings; every value must sit under a heading`
+        );
+      }
+      return headers.reduce<Record<string, string>>((result, header, position) => {
+        result[header] = cleanCell(row[position] ?? "");
         return result;
-      }, {})
-    )
+      }, {});
+    })
     .filter((row) => Object.values(row).some((value) => value !== ""));
 
-  if (rows.length === 0) throw new Error("The catalog file has no data rows");
+  if (rows.length === 0) throw new CatalogParseError("The catalog file has no data rows");
 
   return Object.freeze({ headers: Object.freeze(headers), rows: Object.freeze(rows) });
 }
@@ -84,11 +106,11 @@ export function parseCsv(buffer: Buffer): ParsedTable {
     trim: false
   }) as unknown;
   if (!Array.isArray(records)) {
-    throw new Error("Unable to parse the CSV catalog");
+    throw new CatalogParseError("Unable to parse the CSV catalog");
   }
   const matrix = records.map((record) => {
     if (!Array.isArray(record)) {
-      throw new Error("CSV rows must contain columns");
+      throw new CatalogParseError("CSV rows must contain columns");
     }
     return record.map((cell) => String(cell));
   });
@@ -97,10 +119,12 @@ export function parseCsv(buffer: Buffer): ParsedTable {
 
 function excelCellText(cell: ExcelJS.Cell): string {
   if (cell.type === ExcelJS.ValueType.Formula) {
-    throw new Error("Formula cells are not accepted in catalog imports; paste values first");
+    throw new CatalogParseError(
+      "Formula cells are not accepted in catalog imports; paste values first"
+    );
   }
   if (cell.value instanceof Date) {
-    throw new Error("Date cells are not accepted in catalog imports");
+    throw new CatalogParseError("Date cells are not accepted in catalog imports");
   }
   return cell.text;
 }
@@ -112,16 +136,18 @@ export async function parseXlsx(buffer: Buffer): Promise<ParsedTable> {
   await workbook.xlsx.load(bytes.buffer);
   const worksheet = workbook.worksheets[0];
   if (worksheet === undefined) {
-    throw new Error("The workbook has no worksheet");
+    throw new CatalogParseError("The workbook has no worksheet");
   }
   if (worksheet.actualRowCount > MAX_ROWS + 1) {
-    throw new RangeError(`Catalog files may contain at most ${String(MAX_ROWS)} data rows`);
+    throw new CatalogParseError(`Catalog files may contain at most ${String(MAX_ROWS)} data rows`);
   }
 
   const matrix: string[][] = [];
   worksheet.eachRow({ includeEmpty: true }, (row) => {
     if (row.cellCount > MAX_COLUMNS || row.actualCellCount > MAX_COLUMNS) {
-      throw new RangeError(`Catalog files may contain at most ${String(MAX_COLUMNS)} columns`);
+      throw new CatalogParseError(
+        `Catalog files may contain at most ${String(MAX_COLUMNS)} columns`
+      );
     }
     const cells: string[] = [];
     for (let column = 1; column <= row.cellCount; column += 1) {

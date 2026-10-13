@@ -1,4 +1,4 @@
-export { parseCsv, parseXlsx } from "./parse.js";
+export { CatalogParseError, parseCsv, parseXlsx } from "./parse.js";
 export {
   buildItemSearchText,
   EMBEDDING_DIMENSIONS,
@@ -32,6 +32,7 @@ export {
   type CatalogBudgetOperation
 } from "./rate-limit.js";
 export {
+  MAX_CATALOG_PAGE,
   TenantCatalogService,
   serializeCatalogItem,
   type CatalogImport,

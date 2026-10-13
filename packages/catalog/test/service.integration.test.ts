@@ -144,8 +144,8 @@ describe("tenant catalog persistence", () => {
         taxClass: "zero_rated"
       });
       await expect(catalog.archive(created.id)).resolves.toBe(true);
-      const rows = await catalog.list();
-      expect(rows.find((row) => row.id === created.id)?.active).toBe(false);
+      const page = await catalog.list();
+      expect(page.items.find((row) => row.id === created.id)?.active).toBe(false);
     });
 
     await runtime.run(tenantB, async (database) => {

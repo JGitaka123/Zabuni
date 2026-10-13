@@ -17,6 +17,9 @@ import {
 
 import type { CatalogInput, ImportPreview } from "./types.js";
 
+/** Matches the alias listing's ceiling, so the two pages behave alike. */
+export const MAX_CATALOG_PAGE = 100;
+
 export type CatalogItem = typeof items.$inferSelect;
 export type CatalogImport = typeof catalogImports.$inferSelect;
 export type CatalogImportRow = typeof catalogImportRows.$inferSelect;
@@ -108,12 +111,38 @@ export class TenantCatalogService {
     this.#tenantId = verifiedTenantId;
   }
 
-  async list(): Promise<readonly CatalogItem[]> {
-    return this.#database
+  /**
+   * One page of the catalog, ordered by SKU.
+   *
+   * Import accepts twenty thousand rows, so an unbounded list was a response
+   * whose size the caller could not predict and the server could not refuse.
+   * The page is always bounded; `asc(items.id)` breaks ties so that two pages
+   * of equal SKUs cannot repeat or skip a row between calls.
+   */
+  async list(page?: { readonly limit?: number; readonly offset?: number }) {
+    const limit = page?.limit ?? MAX_CATALOG_PAGE;
+    const offset = page?.offset ?? 0;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CATALOG_PAGE) {
+      throw new RangeError(`Catalog page size must be between 1 and ${String(MAX_CATALOG_PAGE)}`);
+    }
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new RangeError("Catalog page offset must not be negative");
+    }
+    // One extra row answers "is there another page?" without a second count
+    // query, which would otherwise be a second scan of the whole catalog.
+    const rows = await this.#database
       .select()
       .from(items)
       .where(eq(items.tenantId, this.#tenantId))
-      .orderBy(asc(items.sku));
+      .orderBy(asc(items.sku), asc(items.id))
+      .limit(limit + 1)
+      .offset(offset);
+    return {
+      items: rows.slice(0, limit) as readonly CatalogItem[],
+      limit,
+      offset,
+      hasMore: rows.length > limit
+    };
   }
 
   async get(itemId: string): Promise<CatalogItem | undefined> {

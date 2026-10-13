@@ -9,7 +9,7 @@ import {
 } from "./embedding.js";
 import { evaluateTopOne, type MatchEvaluationCase } from "./evaluation.js";
 import { TenantCatalogMatcher } from "./matching.js";
-import { TenantCatalogService } from "./service.js";
+import { MAX_CATALOG_PAGE, TenantCatalogService, type CatalogItem } from "./service.js";
 
 function parseCases(value: unknown): readonly MatchEvaluationCase[] {
   if (!Array.isArray(value) || value.length === 0) {
@@ -47,9 +47,16 @@ const cases = parseCases(JSON.parse(await readFile(datasetPath, "utf8")) as unkn
 const runtime = createTenantRuntime(databaseUrl);
 try {
   const provider = new FixtureEmbeddingProvider();
-  const catalog = await runtime.run(tenantId, (database) =>
-    new TenantCatalogService(database, tenantId).list()
-  );
+  // The list endpoint is paged. This is an offline evaluation, so it walks
+  // every page: a partial catalog would quietly understate top-1 accuracy.
+  const catalog: CatalogItem[] = [];
+  for (let offset = 0; ; offset += MAX_CATALOG_PAGE) {
+    const page = await runtime.run(tenantId, (database) =>
+      new TenantCatalogService(database, tenantId).list({ limit: MAX_CATALOG_PAGE, offset })
+    );
+    catalog.push(...page.items);
+    if (!page.hasMore) break;
+  }
   for (const item of catalog) {
     if (!item.active) continue;
     await runtime.run(tenantId, async (database) => {

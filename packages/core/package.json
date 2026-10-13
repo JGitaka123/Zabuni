@@ -4,7 +4,14 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./money": {
+      "types": "./dist/money.d.ts",
+      "import": "./dist/money.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
