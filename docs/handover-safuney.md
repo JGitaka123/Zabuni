@@ -1,7 +1,7 @@
 # Zabuni — testing handover
 
 **For:** James, Safuney Limited
-**Date:** 2026-08-10
+**Date:** 2026-10-13
 
 This is an early build. It covers the catalog foundation only: signing in, setting up your company, getting your product list in, classifying it for tax, and matching an RFQ line to a SKU. Quoting, invoicing, eTIMS, M-Pesa and the agents are not built yet — see [What is deliberately not here](#what-is-deliberately-not-here) so you are not hunting for something that does not exist.
 
@@ -37,7 +37,9 @@ Open http://localhost:3000/sign-in.
 
 Sign-in uses a six-digit code sent to your email address. **No email is actually sent** in this build — there is no mail provider configured, and adding one before the data-protection work is done would be premature.
 
-Instead, every code is written to a file in the project root:
+Instead, every code is written to a file in the project root. The API prints
+its full path when it starts, under `fixtureOtpMailbox`, so you never have to
+hunt for it:
 
 ```powershell
 Get-Content fixture-otp.jsonl -Tail 1
@@ -59,13 +61,22 @@ The first time you sign in you will be asked for your company's legal name. That
 
 The value of your time is in the first three especially — they are where a bug costs real money or creates a legal problem.
 
-1. **Your real SKU list.** Import a genuine export of your product list, however messy. Wrong column names, blank cells, duplicate codes, odd units, prices with decimals or currency symbols. The import previews before it commits: check that what it says it will create matches what you expect, and that it refuses the rows it should refuse.
+1. **Your real SKU list.** Import a genuine export of your product list, however messy. Wrong column names, blank cells, duplicate codes, odd units. The import previews before it commits: check that what it says it will create matches what you expect, and that it refuses the rows it should refuse.
+
+   **Prices.** Map your price column to **Unit cost**, not to "Cost minor units". Unit cost reads what your spreadsheet actually contains — `1234.56`, `1,234.56`, `KSh 2,500`, `1,500/=`, `2500` — and converts it exactly. "Cost minor units" is for machine exports that already hold integer cents.
+
+   Three refusals are deliberate, and we would rather you saw them than had us guess:
+   - `1.234,56` or `1 234,56` — European notation. We cannot tell whether that is one thousand or one point two, so write it as `1234.56`.
+   - `USD 40.00` in a column whose currency is KES — importing it would record roughly a hundredth of the real price.
+   - `1.005` in KES — a shilling has two decimal places, so half a cent cannot be stored. We will not round it away quietly.
+
+   You must map a currency column alongside the price. If your list is all in one currency and has no such column, tell us: we have deliberately not guessed a default, because guessing at a currency is guessing at money.
 
 2. **Tax classification.** Every item must carry an explicit KRA classification — 16% standard, zero-rated, or exempt — and a note recording why. The system will not let you create or import an item without one, and will not let you change one without a fresh note. This is intentional and it is the part most worth trying to break: if you find any route that lets an item exist without an explicit classification, that is the most important bug you can report.
 
 3. **Matching.** Take real RFQ lines — how a customer actually writes them, abbreviations and all — and see which SKU comes back and why. Each result shows its component scores and the reasons behind it. Tell us where it is confidently wrong; that is more useful than where it is unsure.
 
-4. **Money.** Costs are stored in cents and never as decimals. If you ever see a price render as `1234.5600000001`, or a total that is a cent out, we want to know immediately.
+4. **Money.** Costs are stored as whole cents internally and converted by string arithmetic, so no price ever passes through a decimal number. The screen shows you the amount — `KES 1,234.56` — not the stored cents. If you ever see `1234.5600000001`, a total that is a cent out, or a price that looks a hundred times too big or too small, we want to know immediately.
 
 5. **Two-company isolation.** Sign in with a second email address, create a second company, and try hard to see the first one's data. You should not be able to. If you can, stop and tell us straight away.
 
@@ -76,6 +87,7 @@ None of this is missing by accident:
 - **No quoting, invoicing, eTIMS, or M-Pesa.** Those are Phase 2. There is no way to raise an invoice yet.
 - **No WhatsApp, no agents, no chasing of receivables.** Phase 3.
 - **No RFQ upload or document extraction.** That is the next task (Q-4) and is blocked until matching is measured against a real held-out set of your RFQs — which is one of the things we would like from you.
+- **The item list shows 100 at a time.** There is a "Show more items" button. A catalog of any size is fine; it just arrives a page at a time.
 - **The background worker will not start.** It refuses on purpose: it has no delivery handlers yet, and starting it against a real queue would mark every queued item as permanently failed. `worker_no_handlers_registered` in the log is the expected, correct behaviour.
 - **Match quality is not representative.** The local matcher uses a deterministic stand-in, not a real embedding model. Judge the explanations and the workflow, not the accuracy.
 
@@ -100,7 +112,7 @@ pnpm --filter @zabuni/api start                   # in another terminal
 pnpm acceptance
 ```
 
-It should report `100/100 passed`. If it does not on a clean checkout, that is itself worth reporting. The most recent recorded run is in [`docs/reports/acceptance-2026-08-10.md`](./reports/acceptance-2026-08-10.md), including the four defects it caught.
+It should report `113/113 passed`. If it does not on a clean checkout, that is itself worth reporting. The most recent recorded run is in [`docs/reports/acceptance-2026-10-13.md`](./reports/acceptance-2026-10-13.md), including the seven defects it caught.
 
 ## A note on your data
 

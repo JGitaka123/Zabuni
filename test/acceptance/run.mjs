@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 
 const API = process.env.ZABUNI_API ?? "http://localhost:3001";
 const WEB_ORIGIN = process.env.ZABUNI_WEB_ORIGIN ?? "http://localhost:3000";
@@ -31,7 +32,14 @@ async function check(id, name, fn) {
   const started = Date.now();
   try {
     const detail = await fn();
-    results.push({ id, section: currentSection, name, ok: true, detail: detail ?? "", ms: Date.now() - started });
+    results.push({
+      id,
+      section: currentSection,
+      name,
+      ok: true,
+      detail: detail ?? "",
+      ms: Date.now() - started
+    });
   } catch (error) {
     results.push({
       id,
@@ -98,7 +106,13 @@ async function call(path, { method = "GET", body, cookie, headers = {}, raw, ip 
   } catch {
     json = undefined;
   }
-  return { status: response.status, json, text, headers: response.headers, cookie: jarFrom(response) };
+  return {
+    status: response.status,
+    json,
+    text,
+    headers: response.headers,
+    cookie: jarFrom(response)
+  };
 }
 
 function latestCode(email) {
@@ -285,9 +299,17 @@ async function main() {
     const ip = clientIpFor(email);
     await sendCode(email, ip);
     const otp = latestCode(email);
-    const first = await call("/auth/sign-in/email-otp", { method: "POST", body: { email, otp }, ip });
+    const first = await call("/auth/sign-in/email-otp", {
+      method: "POST",
+      body: { email, otp },
+      ip
+    });
     expectStatus(first, 200, "first use");
-    const second = await call("/auth/sign-in/email-otp", { method: "POST", body: { email, otp }, ip });
+    const second = await call("/auth/sign-in/email-otp", {
+      method: "POST",
+      body: { email, otp },
+      ip
+    });
     expect(second.status >= 400, `replay accepted with ${second.status}`);
   });
 
@@ -480,7 +502,10 @@ async function main() {
 
   await check(40, "created item appears in the listing", async () => {
     const response = await call("/catalog/items", { cookie: ownerCookie });
-    expect(response.json.items.some((item) => item.sku === sku), "item not listed");
+    expect(
+      response.json.items.some((item) => item.sku === sku),
+      "item not listed"
+    );
   });
 
   await check(41, "cost is serialized as a string, never a float", async () => {
@@ -509,7 +534,10 @@ async function main() {
   });
 
   await check(44, "item creation requires authentication", async () => {
-    const response = await call("/catalog/items", { method: "POST", body: itemBody(`X-${unique()}`) });
+    const response = await call("/catalog/items", {
+      method: "POST",
+      body: itemBody(`X-${unique()}`)
+    });
     expectStatus(response, 401, "unauthenticated create");
   });
 
@@ -627,8 +655,10 @@ async function main() {
   });
 
   await check(57, "item ids are UUIDv7", async () => {
-    expect(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(itemId),
-      `not a UUIDv7: ${itemId}`);
+    expect(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(itemId),
+      `not a UUIDv7: ${itemId}`
+    );
   });
 
   await check(58, "created timestamp is ISO-8601 UTC", async () => {
@@ -1055,9 +1085,201 @@ async function main() {
       await call("/onboarding", { method: "POST", cookie: ownerCookie, body: {} })
     ];
     for (const probe of probes) {
-      expect(!/zabuni_app|postgres:\/\/|at Object\.|node_modules/i.test(probe.text),
-        `leaked internals: ${probe.text.slice(0, 120)}`);
+      expect(
+        !/zabuni_app|postgres:\/\/|at Object\.|node_modules/i.test(probe.text),
+        `leaked internals: ${probe.text.slice(0, 120)}`
+      );
     }
+  });
+
+  // --------------------------------------------- real-world price handling
+  section("Real-world prices and paging");
+
+  const priceMapping = JSON.stringify({
+    sku: "Code",
+    description: "Name",
+    cost: "Unit Price",
+    costCurrency: "Currency",
+    taxClass: "Tax"
+  });
+
+  async function uploadPrices(csv, name = "prices.csv") {
+    const form = new FormData();
+    form.set("file", new Blob([csv], { type: "text/csv" }), name);
+    form.set("mapping", priceMapping);
+    const response = await fetch(`${API}/catalog/imports/preview`, {
+      method: "POST",
+      headers: { Cookie: ownerCookie, Origin: WEB_ORIGIN },
+      body: form
+    });
+    const text = await response.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { status: response.status, json, text };
+  }
+
+  await check(101, "a decimal price list imports and converts exactly", async () => {
+    const prefix = `DEC${unique().toUpperCase()}`;
+    const response = await uploadPrices(
+      `Code,Name,Unit Price,Currency,Tax\n` +
+        `${prefix}-1,Bleach 5L,"1,234.56",KES,standard_16\n` +
+        `${prefix}-2,Soap bar,0.07,KES,zero_rated\n` +
+        `${prefix}-3,Gloves box,KSh 2500,KES,standard_16\n`
+    );
+    expectStatus(response, 201, "decimal preview");
+    expect(response.json.counts.valid === 3, `valid was ${response.json.counts.valid}`);
+    const minors = response.json.rows.map((row) => row.value.costMinor);
+    expect(minors.join(",") === "123456,7,250000", `converted to ${minors.join(",")}`);
+  });
+
+  await check(102, "a price in another currency is refused, not rescaled", async () => {
+    const prefix = `CCY${unique().toUpperCase()}`;
+    const response = await uploadPrices(
+      `Code,Name,Unit Price,Currency,Tax\n${prefix}-1,Imported pump,USD 40.00,KES,standard_16\n`
+    );
+    expectStatus(response, 201, "mismatch preview");
+    expect(response.json.counts.rejected === 1, "mismatched currency was accepted");
+    const codes = response.json.rows[0].issues.map((issue) => issue.code);
+    expect(codes.includes("invalid_currency"), `issues were ${codes.join(",")}`);
+  });
+
+  await check(103, "an ambiguous European price is refused with an explanation", async () => {
+    const prefix = `EUR${unique().toUpperCase()}`;
+    const response = await uploadPrices(
+      `Code,Name,Unit Price,Currency,Tax\n${prefix}-1,Drum 200L,"1.234,56",KES,standard_16\n`
+    );
+    expectStatus(response, 201, "ambiguous preview");
+    expect(response.json.counts.rejected === 1, "ambiguous price was accepted");
+    const message = response.json.rows[0].issues.map((issue) => issue.message).join(" ");
+    expect(/1234\.56/.test(message), `message did not show the expected form: ${message}`);
+  });
+
+  await check(104, "a price with more precision than the currency is refused", async () => {
+    const prefix = `PRC${unique().toUpperCase()}`;
+    const response = await uploadPrices(
+      `Code,Name,Unit Price,Currency,Tax\n${prefix}-1,Dosing cap,1.005,KES,standard_16\n`
+    );
+    expectStatus(response, 201, "precision preview");
+    expect(response.json.counts.rejected === 1, "inexact price was accepted");
+  });
+
+  await check(105, "a row with more values than headings is refused outright", async () => {
+    const prefix = `RAG${unique().toUpperCase()}`;
+    const response = await uploadPrices(
+      `Code,Name,Unit Price,Currency,Tax\n${prefix}-1,Bleach 5L,1234.56,KES,standard_16,stray\n`
+    );
+    expectStatus(response, 400, "ragged row");
+    expect(response.json.error === "catalog_file_invalid", `error was ${response.json.error}`);
+    expect(
+      /Row 2 has 1 more value/.test(response.json.detail ?? ""),
+      `detail did not name the row: ${response.json.detail}`
+    );
+  });
+
+  await check(106, "a decimal cost is accepted on the item API too", async () => {
+    const sku = `API-${unique()}`;
+    const response = await call("/catalog/items", {
+      method: "POST",
+      cookie: ownerCookie,
+      body: itemBody(sku, { costMinor: undefined, cost: "1,234.56" })
+    });
+    expectStatus(response, 201, "decimal item create");
+    expect(response.json.item.costMinor === "123456", `stored ${response.json.item.costMinor}`);
+  });
+
+  await check(107, "giving both a decimal cost and minor units is refused", async () => {
+    const response = await call("/catalog/items", {
+      method: "POST",
+      cookie: ownerCookie,
+      body: itemBody(`BOTH-${unique()}`, { cost: "1234.56", costMinor: "123456" })
+    });
+    expectStatus(response, 400, "conflicting money");
+    const codes = (response.json.issues ?? []).map((issue) => issue.code);
+    expect(codes.includes("conflicting_money"), `issues were ${codes.join(",")}`);
+  });
+
+  await check(108, "the item list is paged and reports whether more remain", async () => {
+    const response = await call("/catalog/items?limit=1&offset=0", { cookie: ownerCookie });
+    expectStatus(response, 200);
+    expect(response.json.items.length === 1, `returned ${response.json.items.length}`);
+    expect(response.json.limit === 1, `limit was ${response.json.limit}`);
+    expect(response.json.hasMore === true, "hasMore was not true with more items present");
+  });
+
+  await check(109, "a page beyond the catalog is empty rather than an error", async () => {
+    const response = await call("/catalog/items?limit=1&offset=100000", { cookie: ownerCookie });
+    expectStatus(response, 200);
+    expect(response.json.items.length === 0, "expected an empty page");
+    expect(response.json.hasMore === false, "hasMore was true past the end");
+  });
+
+  await check(110, "an out-of-range page is rejected", async () => {
+    for (const query of ["limit=0", "limit=101", "offset=-1", "limit=abc"]) {
+      const response = await call(`/catalog/items?${query}`, { cookie: ownerCookie });
+      expectStatus(response, 400, `page ${query}`);
+    }
+  });
+
+  await check(111, "paging never repeats or skips an item", async () => {
+    const first = await call("/catalog/items?limit=100&offset=0", { cookie: ownerCookie });
+    expectStatus(first, 200);
+    const seen = new Set(first.json.items.map((item) => item.id));
+    expect(seen.size === first.json.items.length, "a page contained a duplicate");
+    if (first.json.hasMore) {
+      const second = await call("/catalog/items?limit=100&offset=100", { cookie: ownerCookie });
+      expectStatus(second, 200);
+      for (const item of second.json.items) {
+        expect(!seen.has(item.id), `item ${item.sku} appeared on two pages`);
+      }
+    }
+    return `${String(seen.size)} on the first page`;
+  });
+
+  await check(112, "the running server refuses an oversized upload", async () => {
+    // Covered in unit tests too; this proves the limit is actually wired into
+    // the server a tester runs. Deliberately not fetch(): the server answers
+    // 413 while the body is still being written, and undici treats an early
+    // response as a failed request. node:http surfaces it as curl does.
+    const url = new URL(`${API}/catalog/imports/preview`);
+    const status = await new Promise((resolve, reject) => {
+      const client = httpRequest(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: "POST",
+          headers: {
+            Cookie: ownerCookie,
+            Origin: WEB_ORIGIN,
+            "Content-Type": "multipart/form-data; boundary=zabuni",
+            "Content-Length": String(32 * 1024 * 1024)
+          }
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        }
+      );
+      client.on("error", reject);
+      // Write a megabyte and stop; the declared length is what must be refused.
+      client.write("x".repeat(1024 * 1024));
+      setTimeout(() => {
+        client.destroy();
+      }, 2000);
+    });
+    expect(status === 413, `got ${status}`);
+  });
+
+  await check(113, "the fixture mailbox sits where the handover says it does", async () => {
+    // The API's working directory is apps/api under pnpm --filter, so a
+    // cwd-relative mailbox landed somewhere the tester was never told about
+    // and local sign-in could not be completed at all.
+    expect(existsSync(MAILBOX), `no mailbox at ${MAILBOX}`);
+    return MAILBOX;
   });
 }
 
@@ -1069,7 +1291,9 @@ const failed = results.filter((result) => !result.ok);
 for (const result of results) {
   const mark = result.ok ? "PASS" : "FAIL";
   const extra = result.detail === "" ? "" : ` — ${result.detail}`;
-  console.log(`${String(result.id).padStart(3)} ${mark}  ${result.name}${result.ok ? (extra ? ` (${result.detail})` : "") : extra}`);
+  console.log(
+    `${String(result.id).padStart(3)} ${mark}  ${result.name}${result.ok ? (extra ? ` (${result.detail})` : "") : extra}`
+  );
 }
 console.log(`\n${passed.length}/${results.length} passed, ${failed.length} failed`);
 
