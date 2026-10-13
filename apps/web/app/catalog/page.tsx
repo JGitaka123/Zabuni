@@ -1,5 +1,6 @@
 "use client";
 
+import { formatMinorUnits } from "@zabuni/core/money";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { apiOrigin } from "../../lib/public-config";
@@ -79,7 +80,7 @@ export default function CatalogPage() {
   const [description, setDescription] = useState("");
   const [taxClass, setTaxClass] = useState<TaxClass | "">("");
   const [taxClassificationBasis, setTaxClassificationBasis] = useState("");
-  const [costMinor, setCostMinor] = useState("");
+  const [cost, setCost] = useState("");
   const [costCurrency, setCostCurrency] = useState("KES");
   const [file, setFile] = useState<File>();
   const [headers, setHeaders] = useState<readonly string[]>([]);
@@ -92,15 +93,24 @@ export default function CatalogPage() {
   const [itemTaxChoices, setItemTaxChoices] = useState<Record<string, TaxClass>>({});
   const [itemTaxNotes, setItemTaxNotes] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
+  const [hasMore, setHasMore] = useState(false);
 
-  async function loadItems() {
-    const { response, body } = await apiJson("/catalog/items");
+  /**
+   * The list endpoint is paged, so the table has to ask for the next page
+   * rather than assume the first response is the whole catalog -- an import
+   * accepts twenty thousand rows.
+   */
+  async function loadItems(offset = 0) {
+    const { response, body } = await apiJson(`/catalog/items?offset=${String(offset)}`);
     if (!response.ok || typeof body !== "object" || body === null || !("items" in body)) {
       setMessage(errorLabel(body));
       return;
     }
     const result = Reflect.get(body, "items");
-    if (Array.isArray(result)) setItems(result as CatalogItem[]);
+    if (!Array.isArray(result)) return;
+    const page = result as CatalogItem[];
+    setItems((current) => (offset === 0 ? page : [...current, ...page]));
+    setHasMore(Reflect.get(body, "hasMore") === true);
   }
 
   useEffect(() => {
@@ -118,7 +128,7 @@ export default function CatalogPage() {
       taxClass,
       taxClassificationBasis,
       active: true,
-      ...(costMinor === "" ? {} : { costMinor, costCurrency })
+      ...(cost === "" ? {} : { cost, costCurrency })
     };
     const { response, body } = await apiJson("/catalog/items", {
       method: "POST",
@@ -133,7 +143,7 @@ export default function CatalogPage() {
     setDescription("");
     setTaxClass("");
     setTaxClassificationBasis("");
-    setCostMinor("");
+    setCost("");
     setMessage("Item created.");
     await loadItems();
   }
@@ -207,14 +217,16 @@ export default function CatalogPage() {
     const nextCounts: unknown = "counts" in body ? body.counts : undefined;
     const nextImportId: unknown = "importId" in body ? body.importId : undefined;
     const nextRows: unknown = "rows" in body ? body.rows : undefined;
-    if (!isImportCounts(nextCounts) || typeof nextImportId !== "string" || !Array.isArray(nextRows)) {
+    if (
+      !isImportCounts(nextCounts) ||
+      typeof nextImportId !== "string" ||
+      !Array.isArray(nextRows)
+    ) {
       setMessage("import preview was incomplete");
       return;
     }
     setCounts(nextCounts);
-    setProblemRows(
-      nextRows.filter((row): row is ImportProblemRow => isImportProblemRow(row))
-    );
+    setProblemRows(nextRows.filter((row): row is ImportProblemRow => isImportProblemRow(row)));
     setImportId(nextImportId);
     setMessage(
       nextCounts.staged + nextCounts.rejected === 0
@@ -318,14 +330,22 @@ export default function CatalogPage() {
           >
             <label>
               SKU
-              <input required value={sku} onChange={(event) => { setSku(event.target.value); }} />
+              <input
+                required
+                value={sku}
+                onChange={(event) => {
+                  setSku(event.target.value);
+                }}
+              />
             </label>
             <label>
               Description
               <input
                 required
                 value={description}
-                onChange={(event) => { setDescription(event.target.value); }}
+                onChange={(event) => {
+                  setDescription(event.target.value);
+                }}
               />
             </label>
             <label>
@@ -333,7 +353,9 @@ export default function CatalogPage() {
               <select
                 required
                 value={taxClass}
-                onChange={(event) => { setTaxClass(event.target.value as TaxClass); }}
+                onChange={(event) => {
+                  setTaxClass(event.target.value as TaxClass);
+                }}
               >
                 <option value="">Choose explicitly</option>
                 <option value="standard_16">Standard 16%</option>
@@ -354,12 +376,14 @@ export default function CatalogPage() {
               />
             </label>
             <label>
-              Cost in minor units (optional)
+              Unit cost (optional)
               <input
-                inputMode="numeric"
-                pattern="[0-9]+"
-                value={costMinor}
-                onChange={(event) => { setCostMinor(event.target.value); }}
+                inputMode="decimal"
+                placeholder="1,234.56"
+                value={cost}
+                onChange={(event) => {
+                  setCost(event.target.value);
+                }}
               />
             </label>
             <label>
@@ -367,7 +391,9 @@ export default function CatalogPage() {
               <input
                 maxLength={3}
                 value={costCurrency}
-                onChange={(event) => { setCostCurrency(event.target.value.toUpperCase()); }}
+                onChange={(event) => {
+                  setCostCurrency(event.target.value.toUpperCase());
+                }}
               />
             </label>
             <button type="submit">Create item</button>
@@ -398,7 +424,8 @@ export default function CatalogPage() {
               {mappingSelect("brand", "Brand")}
               {mappingSelect("packSize", "Pack size")}
               {mappingSelect("uom", "Unit of measure")}
-              {mappingSelect("costMinor", "Cost minor units")}
+              {mappingSelect("cost", "Unit cost (e.g. 1,234.56)")}
+              {mappingSelect("costMinor", "Cost minor units (integer cents)")}
               {mappingSelect("costCurrency", "Cost currency")}
               {mappingSelect("leadTimeDays", "Lead time days")}
               <button type="button" onClick={() => void previewImport()}>
@@ -535,7 +562,9 @@ export default function CatalogPage() {
                 <td>{item.description}</td>
                 <td>{item.taxClass}</td>
                 <td className="money-cell">
-                  {item.costMinor === null ? "—" : `${item.costCurrency ?? ""} ${item.costMinor}`}
+                  {item.costMinor === null || item.costCurrency === null
+                    ? "—"
+                    : `${item.costCurrency} ${formatMinorUnits(BigInt(item.costMinor), item.costCurrency)}`}
                 </td>
                 <td>{item.active ? "Active" : "Archived"}</td>
                 <td>
@@ -589,6 +618,11 @@ export default function CatalogPage() {
             ))}
           </tbody>
         </table>
+        {hasMore ? (
+          <button type="button" onClick={() => void loadItems(items.length)}>
+            Show more items
+          </button>
+        ) : null}
       </section>
     </main>
   );

@@ -3,8 +3,10 @@ import {
   acquireCatalogMatchConcurrency,
   CatalogRateLimitError,
   CatalogMappingError,
+  CatalogParseError,
   CatalogValidationError,
   consumeCatalogRequestRate,
+  MAX_CATALOG_PAGE,
   normalizeMatchText,
   parseCsv,
   parseXlsx,
@@ -73,9 +75,19 @@ function mappingFromJson(value: string): ColumnMapping {
   return mapping;
 }
 
-function validationResponse(error: unknown): { readonly error: string; readonly issues?: unknown } {
+function validationResponse(error: unknown): {
+  readonly error: string;
+  readonly issues?: unknown;
+  readonly detail?: string;
+} {
   if (error instanceof CatalogMappingError || error instanceof CatalogValidationError) {
     return { error: "catalog_validation_failed", issues: error.issues };
+  }
+  // A file-level problem has no row to attach an issue to, so the message is
+  // the only thing that tells the user what to change. These strings describe
+  // the user's own file and contain no internal detail.
+  if (error instanceof CatalogParseError) {
+    return { error: "catalog_file_invalid", detail: error.message };
   }
   return { error: "catalog_validation_failed" };
 }
@@ -136,12 +148,28 @@ export function registerCatalogRoutes(
   }
   const tenantSession = requireTenantSession(dependencies.auth, dependencies.memberships);
   app.get("/catalog/items", tenantSession, async (context) => {
+    const limit = Number(context.req.query("limit") ?? String(MAX_CATALOG_PAGE));
+    const offset = Number(context.req.query("offset") ?? "0");
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_CATALOG_PAGE ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0
+    ) {
+      return context.json({ error: "catalog_item_page_invalid" }, 400);
+    }
     const session = context.get("tenantSession");
-    const rows = await dependencies.tenants.run(session.tenantId, async (database) => {
+    const page = await dependencies.tenants.run(session.tenantId, async (database) => {
       const catalog = new TenantCatalogService(database, session.tenantId);
-      return catalog.list();
+      return catalog.list({ limit, offset });
     });
-    return context.json({ items: rows.map(serializeCatalogItem) });
+    return context.json({
+      items: page.items.map(serializeCatalogItem),
+      limit: page.limit,
+      offset: page.offset,
+      hasMore: page.hasMore
+    });
   });
 
   app.post("/catalog/matches", catalogJsonBodyLimit, tenantSession, async (context) => {
@@ -528,6 +556,12 @@ export function registerCatalogRoutes(
       );
     } catch (error) {
       if (isBodyLimitError(error)) throw error;
+      // /inspect already reported this specifically; reporting it here as a
+      // generic validation failure told the user their columns were wrong when
+      // the real problem was the file's size.
+      if (error instanceof RangeError && error.message === "catalog_file_size_invalid") {
+        return context.json({ error: error.message }, 400);
+      }
       return context.json(validationResponse(error), 400);
     }
   });

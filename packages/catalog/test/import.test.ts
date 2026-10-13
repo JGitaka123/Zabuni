@@ -218,3 +218,199 @@ describe("catalog parsing and preview", () => {
     await expect(fetch("https://example.com/catalog.xlsx")).rejects.toThrow();
   });
 });
+
+describe("decimal prices on import", () => {
+  const priceMapping = {
+    sku: "Code",
+    description: "Description",
+    cost: "Unit Price",
+    costCurrency: "CCY",
+    taxClass: "KRA Tax"
+  } as const;
+
+  const previewOf = (price: string, currency = "KES") =>
+    previewImport(
+      {
+        headers: ["Code", "Description", "Unit Price", "CCY", "KRA Tax"],
+        rows: [
+          {
+            Code: "ANT-HW-5000",
+            Description: "Soap, antibacterial 5L",
+            "Unit Price": price,
+            CCY: currency,
+            "KRA Tax": "standard_16"
+          }
+        ]
+      },
+      priceMapping
+    ).rows[0];
+
+  it("reads the price shapes a real export contains", () => {
+    // This is the whole point: a distributor's price list holds major units
+    // with separators, not integer cents, so requiring cents meant no real
+    // catalog could be imported without being transformed first.
+    for (const [price, expected] of [
+      ["1234.56", "123456"],
+      ["1,234.56", "123456"],
+      ["KSh 1,234.56", "123456"],
+      ["1,500/=", "150000"],
+      ["1234", "123400"],
+      ["1234.5", "123450"],
+      ["0.07", "7"]
+    ] as const) {
+      const row = previewOf(price);
+      expect(row?.kind, price).toBe("valid");
+      if (row?.kind === "valid") expect(row.value.costMinor, price).toBe(expected);
+    }
+  });
+
+  it("uses the row's currency to decide the decimal places", () => {
+    const shillings = previewOf("1500", "UGX");
+    expect(shillings?.kind).toBe("valid");
+    if (shillings?.kind === "valid") expect(shillings.value.costMinor).toBe("1500");
+
+    const dinars = previewOf("1.234", "KWD");
+    expect(dinars?.kind).toBe("valid");
+    if (dinars?.kind === "valid") expect(dinars.value.costMinor).toBe("1234");
+  });
+
+  it("rejects a price written in another currency rather than rescaling it", () => {
+    const row = previewOf("USD 40.00", "KES");
+    expect(row?.kind).toBe("rejected");
+    if (row?.kind === "rejected") {
+      expect(row.issues.map((entry) => entry.code)).toContain("invalid_currency");
+    }
+  });
+
+  it("rejects ambiguous and inexact prices with the reason in the message", () => {
+    for (const price of ["1.234,56", "1 234,56", "1234,56", "1234.567", "n/a", "-5.00"]) {
+      const row = previewOf(price);
+      expect(row?.kind, price).toBe("rejected");
+      if (row?.kind === "rejected") {
+        expect(
+          row.issues.some((entry) => entry.field === "cost"),
+          price
+        ).toBe(true);
+        expect(row.issues[0]?.message.length, price).toBeGreaterThan(10);
+      }
+    }
+  });
+
+  it("refuses a row that gives both a decimal cost and minor units", () => {
+    const row = previewImport(
+      {
+        headers: ["Code", "Description", "Unit Price", "Cents", "CCY", "KRA Tax"],
+        rows: [
+          {
+            Code: "A1",
+            Description: "Bleach 5L",
+            "Unit Price": "1234.56",
+            Cents: "123456",
+            CCY: "KES",
+            "KRA Tax": "exempt"
+          }
+        ]
+      },
+      { ...priceMapping, costMinor: "Cents" }
+    ).rows[0];
+
+    expect(row?.kind).toBe("rejected");
+    if (row?.kind === "rejected") {
+      expect(row.issues.map((entry) => entry.code)).toContain("conflicting_money");
+    }
+  });
+
+  it("still reads an integer costMinor column exactly as before", () => {
+    // Guards the thing that would have been catastrophic: reinterpreting an
+    // existing costMinor column as major units divides every price by a hundred.
+    const row = previewImport(
+      {
+        headers: ["Code", "Description", "Cents", "CCY", "KRA Tax"],
+        rows: [
+          {
+            Code: "A1",
+            Description: "Bleach 5L",
+            Cents: "123456",
+            CCY: "KES",
+            "KRA Tax": "exempt"
+          }
+        ]
+      },
+      {
+        sku: "Code",
+        description: "Description",
+        costMinor: "Cents",
+        costCurrency: "CCY",
+        taxClass: "KRA Tax"
+      }
+    ).rows[0];
+
+    expect(row?.kind).toBe("valid");
+    if (row?.kind === "valid") expect(row.value.costMinor).toBe("123456");
+  });
+
+  it("requires a currency alongside a decimal cost", () => {
+    const row = previewImport(
+      {
+        headers: ["Code", "Description", "Unit Price", "KRA Tax"],
+        rows: [
+          {
+            Code: "A1",
+            Description: "Bleach 5L",
+            "Unit Price": "1234.56",
+            "KRA Tax": "exempt"
+          }
+        ]
+      },
+      { sku: "Code", description: "Description", cost: "Unit Price", taxClass: "KRA Tax" }
+    ).rows[0];
+
+    expect(row?.kind).toBe("rejected");
+    if (row?.kind === "rejected") {
+      expect(row.issues.some((entry) => entry.message.includes("currency"))).toBe(true);
+    }
+  });
+
+  it("accepts a decimal cost through the JSON API shape too", () => {
+    expect(
+      validateCatalogInput({
+        sku: "A1",
+        description: "Bleach 5L",
+        cost: "1,234.56",
+        costCurrency: "KES",
+        taxClass: "exempt",
+        active: true
+      })
+    ).toMatchObject({ costMinor: "123456", costCurrency: "KES" });
+  });
+});
+
+describe("ragged rows", () => {
+  const header = "Code,Description,CCY\n";
+
+  it("refuses a row with more values than there are headings", () => {
+    // A shifted row is the dangerous case: without this it imported silently,
+    // with the surplus value discarded and everything after it off by one.
+    expect(() => parseCsv(Buffer.from(`${header}A1,Bleach 5L,KES,999\n`))).toThrow(
+      /Row 2 has 1 more value/u
+    );
+  });
+
+  it("names the offending row by the number the preview will show", () => {
+    expect(() => parseCsv(Buffer.from(`${header}A1,Bleach 5L,KES\nA2,Soap 1L,KES,oops\n`))).toThrow(
+      /Row 3 /u
+    );
+  });
+
+  it("forgives a trailing delimiter, which carries no value", () => {
+    const table = parseCsv(Buffer.from(`${header}A1,Bleach 5L,KES,\n`));
+
+    expect(table.rows).toEqual([{ Code: "A1", Description: "Bleach 5L", CCY: "KES" }]);
+  });
+
+  it("still pads a row that is short of the headings", () => {
+    const table = parseCsv(Buffer.from(`${header}A1,Bleach 5L\n`));
+
+    expect(table.rows).toEqual([{ Code: "A1", Description: "Bleach 5L", CCY: "" }]);
+  });
+});

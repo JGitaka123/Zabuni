@@ -1,4 +1,4 @@
-import { currencyCode } from "@zabuni/core";
+import { MoneyParseError, currencyCode, parseMoneyAmount } from "@zabuni/core";
 
 import {
   catalogFields,
@@ -123,20 +123,9 @@ function validateRow(
     );
   }
 
-  const rawCost = mapped(source, mapping, "costMinor");
+  const rawMinor = mapped(source, mapping, "costMinor");
+  const rawAmount = mapped(source, mapping, "cost");
   const rawCurrency = mapped(source, mapping, "costCurrency").toUpperCase();
-  let costMinor: string | undefined;
-  if (rawCost !== "") {
-    if (!/^\d+$/.test(rawCost))
-      issues.push(
-        issue(
-          "invalid_money",
-          "costMinor must be a non-negative minor-unit integer string",
-          "costMinor"
-        )
-      );
-    else costMinor = BigInt(rawCost).toString();
-  }
   let costCurrency: string | undefined;
   if (rawCurrency !== "") {
     try {
@@ -151,12 +140,48 @@ function validateRow(
       );
     }
   }
-  if ((rawCost === "") !== (rawCurrency === "")) {
+
+  let costMinor: string | undefined;
+  if (rawMinor !== "" && rawAmount !== "") {
+    // Both present means two claims about the same price. Picking one would be
+    // picking which of the two the user meant.
+    issues.push(
+      issue("conflicting_money", "map either cost or costMinor for a row, not both", "cost")
+    );
+  } else if (rawMinor !== "") {
+    if (!/^\d+$/.test(rawMinor))
+      issues.push(
+        issue(
+          "invalid_money",
+          "costMinor must be a non-negative minor-unit integer string",
+          "costMinor"
+        )
+      );
+    else costMinor = BigInt(rawMinor).toString();
+  } else if (rawAmount !== "" && costCurrency !== undefined) {
+    // The currency decides the number of decimal places, so it has to be known
+    // before the amount can be read at all.
+    try {
+      costMinor = parseMoneyAmount(rawAmount, costCurrency).minorUnits.toString();
+    } catch (error) {
+      const mismatch = error instanceof MoneyParseError && error.reason === "currency_mismatch";
+      issues.push(
+        issue(
+          mismatch ? "invalid_currency" : "invalid_money",
+          error instanceof Error ? error.message : "cost is not a valid amount",
+          "cost"
+        )
+      );
+    }
+  }
+
+  const hasAmount = rawMinor !== "" || rawAmount !== "";
+  if (hasAmount !== (rawCurrency !== "")) {
     issues.push(
       issue(
         "invalid_money",
-        "costMinor and costCurrency must be supplied together",
-        rawCost === "" ? "costMinor" : "costCurrency"
+        "a cost and its currency must be supplied together; map a costCurrency column",
+        hasAmount ? "costCurrency" : "cost"
       )
     );
   }

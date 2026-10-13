@@ -4,6 +4,11 @@ export const catalogFields = [
   "brand",
   "packSize",
   "uom",
+  // Two ways to give a price, and a row may use only one. `cost` is what a
+  // person or a spreadsheet writes ("1,234.56"); `costMinor` is what a machine
+  // export writes (integer cents). Keeping them separate means adding decimal
+  // support could not change how an existing costMinor column is read.
+  "cost",
   "costMinor",
   "costCurrency",
   "fxBufferBps",
@@ -44,6 +49,7 @@ export interface CatalogInput {
 
 export interface ImportIssue {
   readonly code:
+    | "conflicting_money"
     | "duplicate_sku"
     | "invalid_active"
     | "invalid_bps"

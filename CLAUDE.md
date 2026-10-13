@@ -16,6 +16,8 @@ These are correctness requirements, not preferences. Violating any of them is a 
 
 2. **Money is never a float.** All monetary values are `bigint` minor units (KES cents) plus an ISO-4217 currency code. Use `Money` from `packages/core/money.ts`. Never `number` for currency. Never `parseFloat` on a price.
 
+   Amounts arrive from the world written as decimals and have to be shown back to people that way, so both directions live in `money.ts` and work by string arithmetic: `parseMoneyAmount` reads a written amount into exact minor units, `formatMinorUnits` renders minor units for display. Do not write another converter. The currency decides the precision — UGX and RWF have none, KWD has three — so never assume two. Where notation is ambiguous (`1.234,56`) or cannot be exact (`1.005` in KES), refuse it with a reason; being a hundredfold wrong about a price is worse than making someone fix their spreadsheet.
+
 3. **Tax classification is never inferred silently.** Every catalog item carries an explicit KRA tax classification (16% standard / zero-rated / exempt). If an item lacks one, block invoicing and surface a task. Do not default to 16%. Misclassification is the single most common eTIMS failure and it is the customer's legal exposure, not ours to guess at.
 
 4. **eTIMS transmission is idempotent and never silently dropped.** Every invoice transmission has a durable outbox row, an idempotency key, and a terminal state. A failed transmission is a visible, actionable incident in the tenant's UI — never a swallowed log line.

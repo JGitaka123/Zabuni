@@ -10,7 +10,7 @@ import {
 } from "@zabuni/observability";
 
 import { createApp } from "./app.js";
-import { createConfiguredOtpTransport } from "./otp-transport.js";
+import { createConfiguredOtpTransport, resolveFixtureMailboxPath } from "./otp-transport.js";
 import { createApiReadiness } from "./readiness.js";
 
 // Fail closed: an invalid environment aborts the boot before anything listens.
@@ -68,7 +68,12 @@ const server = serve(
       {
         port: info.port,
         environment: config.environment,
-        integrationMode: config.integrationMode
+        integrationMode: config.integrationMode,
+        // Named at startup so a local tester never has to guess where the
+        // sign-in codes are being written.
+        ...(config.useFixtures
+          ? { fixtureOtpMailbox: resolveFixtureMailboxPath(config.fixtureOtpMailbox) }
+          : {})
       }
     );
   }
